@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bdh-hello"
+version = "1.0.0"
+description = "A minimal Black Diamond Hub app used to test the app runtime."
+requires-python = ">=3.11"
+license = "MIT"
+
+[project.entry-points."blackdiamondhub.plugins"]
+hello = "bdh_hello.plugin:spec"
+
+[tool.setuptools]
+packages = ["bdh_hello", "bdh_hello.migrations"]
+
+[tool.setuptools.package-data]
+bdh_hello = ["templates/bdh_hello/*.html"]

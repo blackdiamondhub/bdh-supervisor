@@ -1,0 +1,5 @@
+# The supervisor's Python packages. requirements.txt is generated from this
+# with hashes (scripts/lock.sh) and installed with --require-hashes.
+fastapi>=0.115
+uvicorn>=0.30
+docker>=7.1
