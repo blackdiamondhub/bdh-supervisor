@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: |
+          pip install --require-hashes -r requirements-dev.txt
+          pip install --no-deps "$(grep -o 'https://github.com/blackdiamondlodge/bdh-sdk/releases/download/[^ ]*\.whl' runtime/requirements.in)"
+      - run: ruff check .
+      - run: python -m pytest -q -p no:cacheprovider --deselect tests/test_integration_docker.py
+
+  integration:
+    # Builds both images and the hello wheel, installs and runs hello through
+    # the real DockerDriver, probes the sandbox and enforces the memory budget.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sh scripts/build.sh
+      - run: sh scripts/integration.sh
+        env:
+          BDH_RSS_LIMIT_MB: "70"
+      - name: Memory report
+        if: always()
+        run: |
+          test -f dist/rss.json && cat dist/rss.json || true
+          if [ -f dist/rss.json ]; then
+            python3 -c "import json; r=json.load(open('dist/rss.json')); print(f\"### hello app memory: {r['working_set_mb']} MB (limit {r['limit_mb']} MB)\")" >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rss
+          path: dist/rss.json
+          if-no-files-found: ignore

@@ -1,0 +1,22 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["supervisor", "runtime"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["docker: needs a Docker host and the built images (BDH_DOCKER_TESTS=1)"]
+filterwarnings = ["ignore::DeprecationWarning:docker.*"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+extend-exclude = ["examples/hello/bdh_hello/migrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = ["S101", "S104", "S108", "S310", "S603", "S607", "B008", "UP035"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bdh_supervisor", "bdh_runtime", "bdh_hello"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]
