@@ -193,6 +193,21 @@ async def test_crash_backoff_doubles_and_resets_when_stable(manager, driver, clo
     assert manager.apps["hello"]["failures"] == 0
 
 
+async def test_dead_companion_restarts_the_app(manager, driver, clock, cfg):
+    driver.manifest_for("hello", companions=["go2rtc"])
+    await installed(manager)
+    await manager.start("hello")
+    driver.containers["hello"]["companions"]["go2rtc"] = False
+    await manager.reconcile_app("hello")
+    rec = manager.apps["hello"]
+    assert rec["failures"] == 1 and rec["last_exit"]["companions"] == ["go2rtc"]
+    starts = len(driver.started())
+    clock.advance(cfg.backoff_base + 0.1)
+    await manager.reconcile_app("hello")
+    assert len(driver.started()) == starts + 1
+    assert driver.containers["hello"]["companions"] == {"go2rtc": True}
+
+
 async def test_backoff_is_capped(manager, driver, clock, cfg):
     await installed(manager)
     await manager.start("hello")

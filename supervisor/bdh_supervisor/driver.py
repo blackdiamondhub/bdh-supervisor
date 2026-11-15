@@ -5,7 +5,7 @@ The manager only talks to a :class:`RuntimeDriver`; :class:`DockerDriver`
 tests use a fake. Drivers are blocking; the manager calls them from threads.
 """
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 class DriverError(Exception):
@@ -21,6 +21,8 @@ class ContainerState:
     started_at: str = ""
     image_id: str = ""
     status: str = "missing"
+    # Companion name -> running, for the companions that exist.
+    companions: dict = field(default_factory=dict)
 
 
 class RuntimeDriver(ABC):
@@ -67,7 +69,7 @@ class RuntimeDriver(ABC):
 
     @abstractmethod
     def state(self, app_id) -> ContainerState:
-        """The app container's state."""
+        """The app container's state (and whether its companions run)."""
 
     @abstractmethod
     def logs(self, app_id, lines):
