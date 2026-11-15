@@ -119,6 +119,47 @@ def test_install_worker_networks(cfg):
         T.install_worker(cfg, "runtime", "hello", "1.0.0", wheels, "shell")
 
 
+def _go2rtc_args(cfg, p):
+    spec = T.companion_container(cfg, p, "go2rtc")
+    return spec, json.loads(spec["command"][1])
+
+
+def test_go2rtc_lan_serves_browsers(cfg):
+    p = plan("lan", companions=("go2rtc",))
+    spec, conf = _go2rtc_args(cfg, p)
+    assert spec["host_config"]["network_mode"] == "host"
+    assert conf["api"] == {"listen": ":11907", "origin": "*"}
+    assert conf["webrtc"] == {"listen": ":8555"}
+    assert conf["rtsp"] == {"listen": ""}
+    assert T.app_env(cfg, p)["BDH_GO2RTC_URL"] == "http://127.0.0.1:11907"
+
+
+def test_go2rtc_lan_candidates_and_port(cfg):
+    import dataclasses
+
+    cfg = dataclasses.replace(cfg, go2rtc_webrtc_port=8556,
+                              go2rtc_candidates=("192.168.10.216:8556",))
+    _, conf = _go2rtc_args(cfg, plan("lan", companions=("go2rtc",)))
+    assert conf["webrtc"] == {"listen": ":8556", "candidates": ["192.168.10.216:8556"]}
+
+
+def test_go2rtc_bridged_has_no_webrtc(cfg):
+    spec, conf = _go2rtc_args(cfg, plan("none", companions=("go2rtc",)))
+    assert spec["ipv4_address"] == "10.213.7.3" or spec["ipv4_address"]
+    assert conf["api"] == {"listen": ":1984"}
+    assert conf["webrtc"] == {"listen": ""}
+
+
+def test_config_reads_go2rtc_env(monkeypatch):
+    from bdh_supervisor.config import Config
+
+    monkeypatch.setenv("BDH_GO2RTC_WEBRTC_PORT", "8600")
+    monkeypatch.setenv("BDH_GO2RTC_CANDIDATES", "10.0.0.5:8600, stun:8600")
+    cfg = Config.from_env()
+    assert cfg.go2rtc_webrtc_port == 8600
+    assert cfg.go2rtc_candidates == ("10.0.0.5:8600", "stun:8600")
+
+
 def test_unknown_companion_is_refused(cfg):
     with pytest.raises(ValueError):
         T.companion_container(cfg, plan(), "socat")

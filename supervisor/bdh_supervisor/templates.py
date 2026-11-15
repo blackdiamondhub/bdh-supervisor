@@ -192,9 +192,26 @@ def app_container(cfg, plan, image):
 
 
 def go2rtc_config(cfg, plan):
-    lan = plan.network == NETWORK_LAN
-    listen = f"127.0.0.1:{cfg.lan_go2rtc_port_base + plan.slot}" if lan else f":{GO2RTC_PORT}"
-    return {"api": {"listen": listen}, "rtsp": {"listen": ""}, "webrtc": {"listen": ""}, "log": {"level": "warn"}}
+    """go2rtc's config; ``lan`` apps get one browsers can reach.
+
+    A ``lan`` go2rtc runs on the host network: its API (``lan_go2rtc_port_base
+    + slot``) listens on every interface so browsers on the LAN can load
+    ``video-stream.js`` and its websocket, and WebRTC listens on
+    ``go2rtc_webrtc_port`` (UDP+TCP). That port is host-wide, so only one
+    ``lan`` app per host can have a go2rtc companion with WebRTC.
+    """
+    if plan.network != NETWORK_LAN:
+        return {"api": {"listen": f":{GO2RTC_PORT}"}, "rtsp": {"listen": ""},
+                "webrtc": {"listen": ""}, "log": {"level": "warn"}}
+    webrtc = {"listen": f":{cfg.go2rtc_webrtc_port}"}
+    if cfg.go2rtc_candidates:
+        webrtc["candidates"] = list(cfg.go2rtc_candidates)
+    return {
+        "api": {"listen": f":{cfg.lan_go2rtc_port_base + plan.slot}", "origin": "*"},
+        "rtsp": {"listen": ""},
+        "webrtc": webrtc,
+        "log": {"level": "warn"},
+    }
 
 
 def companion_container(cfg, plan, name):
