@@ -220,6 +220,19 @@ async def test_on_demand_idle_stop_and_activity(manager, driver, clock, cfg):
     assert driver.containers["hello"]["running"] is False
 
 
+async def test_restart_gives_on_demand_apps_a_full_idle_window(manager, driver, catalog, clock, cfg):
+    await installed(manager)
+    await manager.start("hello")
+    clock.advance(cfg.idle_timeout - 10)
+    again = Manager(cfg, driver, catalog, clock=clock)  # supervisor restarts
+    clock.advance(20)
+    await again.reconcile_app("hello")
+    assert driver.containers["hello"]["running"] is True
+    clock.advance(cfg.idle_timeout)
+    await again.reconcile_app("hello")
+    assert driver.containers["hello"]["running"] is False
+
+
 async def test_always_apps_start_after_install_and_never_idle(manager, driver, clock, cfg):
     driver.manifest_for("hello", lifecycle="always")
     await installed(manager)
