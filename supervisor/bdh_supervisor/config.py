@@ -26,6 +26,9 @@ class Config:
     broker_path: str = "/_broker"
     lan_port_base: int = 9200
     lan_go2rtc_port_base: int = 11900
+    # WebRTC of a lan app's go2rtc (host-wide; see templates.go2rtc_config).
+    go2rtc_webrtc_port: int = 8555
+    go2rtc_candidates: tuple = ()
     firewall: str = "required"  # or "off"
     allow_http: bool = False  # http:// wheel/catalog URLs (tests only)
     idle_timeout: int = 600
@@ -58,6 +61,11 @@ class Config:
             broker_port=_int("BDH_BROKER_PORT", cls.broker_port),
             broker_path=os.environ.get("BDH_BROKER_PATH", cls.broker_path),
             lan_port_base=_int("BDH_LAN_PORT_BASE", cls.lan_port_base),
+            lan_go2rtc_port_base=_int("BDH_LAN_GO2RTC_PORT_BASE", cls.lan_go2rtc_port_base),
+            go2rtc_webrtc_port=_int("BDH_GO2RTC_WEBRTC_PORT", cls.go2rtc_webrtc_port),
+            go2rtc_candidates=tuple(
+                c.strip() for c in os.environ.get("BDH_GO2RTC_CANDIDATES", "").split(",") if c.strip()
+            ),
             firewall=os.environ.get("BDH_FIREWALL", cls.firewall),
             allow_http=os.environ.get("BDH_ALLOW_HTTP") == "1",
             idle_timeout=_int("BDH_IDLE_TIMEOUT", cls.idle_timeout),

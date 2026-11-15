@@ -4,7 +4,7 @@ Runs Black Diamond Hub apps in their own hardened containers. The repo builds tw
 
 | Image | Tags | What it is |
 |---|---|---|
-| `ghcr.io/blackdiamondlodge/bdh-app-runtime` | `hub-api-2`, `sha-<commit>` | The image every app container runs: Python 3.13, Django, uvicorn (one worker), whitenoise, requests, websocket-client and the pinned `bdh-sdk`. It also contains the install worker (`python -m bdh_runtime.install`). |
+| `ghcr.io/blackdiamondlodge/bdh-app-runtime` | `hub-api-2`, `sha-<commit>` | The image every app container runs: Python 3.13, Django, uvicorn (one worker), whitenoise, requests, websocket-client, the pinned `bdh-sdk`, and the cameras app's libraries (`uiprotect` with aiohttp/pydantic, Pillow; PyAV is uninstalled). It also contains the install worker (`python -m bdh_runtime.install`). |
 | `ghcr.io/blackdiamondlodge/bdh-supervisor` | `latest`, `sha-<commit>` | The supervisor: a small FastAPI service and the **only** process with the Docker socket. The same image also provides the gateway container and the one-shot firewall helper. |
 
 The hub never talks to Docker. It tells the supervisor *which app and which version*, plus what the admin approved. Images, mounts, users, capabilities, limits and networking all come from platform templates in [`templates.py`](supervisor/bdh_supervisor/templates.py) and are never taken from the request.
@@ -48,6 +48,7 @@ The hub never talks to Docker. It tells the supervisor *which app and which vers
   * The gateway is the only container attached to the egress bridge `bdh-egress` (`10.213.255.0/24`).
   * Apps cannot reach each other, the LAN, the Docker host or the cloud metadata address.
 * **Companions** such as `go2rtc` are started from a platform template on the app's network at `.3`, with the same hardening and a 64 MB limit. The app receives the companion's address as `BDH_GO2RTC_URL`.
+  For a `lan` app, go2rtc runs on the host network: its API listens on every interface at `11900+slot` (browsers load `video-stream.js` and its websocket from there), and WebRTC listens on `8555` UDP+TCP. WebRTC over UDP can't go through Docker's port proxy, so this is a host-wide port: only one `lan` app per host can have a go2rtc companion, and the hub's own go2rtc must be removed first. Set `BDH_GO2RTC_CANDIDATES` to the host's LAN `ip:8555` so browsers get a reachable candidate.
 * **Lifecycle**
   * `on_demand` (default): the app is stopped after 10 minutes without activity (`BDH_IDLE_TIMEOUT`).
   * `always`: the app is kept running.
@@ -106,6 +107,9 @@ Apps are identified by catalog id (`[a-z0-9][a-z0-9_-]{0,63}`). The wheel URL an
 | `BDH_BROKER_HOST` / `BDH_BROKER_PORT` / `BDH_BROKER_PATH` | `172.17.0.1` / `8099` / `/_broker` | Where the hub's broker listens (`BROKER_BIND`/`BROKER_PORT`). |
 | `BDH_SUBNET_PREFIX` | `10.213` | A private `/16` reserved for apps. |
 | `BDH_LAN_PORT_BASE` | `9200` | |
+| `BDH_LAN_GO2RTC_PORT_BASE` | `11900` | API port of a `lan` app's go2rtc is this plus the slot. |
+| `BDH_GO2RTC_WEBRTC_PORT` | `8555` | WebRTC port of a `lan` app's go2rtc (host-wide). |
+| `BDH_GO2RTC_CANDIDATES` | — | Comma-separated WebRTC candidates for a `lan` go2rtc, e.g. `192.168.10.216:8555`. |
 | `BDH_FIREWALL` | `required` | `off` is for development only. Apps are not started if the firewall could not be applied. |
 | `BDH_EGRESS_PORTS` | `80,443` | |
 | `BDH_IDLE_TIMEOUT` | `600` | Seconds. |

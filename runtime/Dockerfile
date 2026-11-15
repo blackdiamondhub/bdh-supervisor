@@ -26,8 +26,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     BDH_PORT=8000 \
     BDH_STATIC_ROOT=/tmp/bdh-static
 
+# PyAV (a uiprotect dependency, ~130 MB of FFmpeg) is removed again: it is
+# only needed for Protect talkback/streaming, which no app uses, and the
+# cameras app stubs it out (cameras/events.py: _without_av).
 COPY runtime/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r /tmp/requirements.txt \
+    && pip uninstall --yes av \
     && rm /tmp/requirements.txt \
     && groupadd --gid 10001 app \
     && useradd --uid 10001 --gid 10001 --no-create-home --home-dir /tmp --shell /usr/sbin/nologin app \
