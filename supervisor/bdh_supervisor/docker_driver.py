@@ -346,7 +346,8 @@ class DockerDriver(RuntimeDriver):
 
     def stats(self, app_id):
         try:
-            data = self.api.stats(T.container_name(app_id), stream=False)
+            # one_shot skips the second sample Docker takes for CPU (~1 s); we only read memory.
+            data = self.api.stats(T.container_name(app_id), stream=False, one_shot=True)
         except NotFound:
             return {}
         mem = data.get("memory_stats") or {}
