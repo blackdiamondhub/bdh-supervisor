@@ -6,8 +6,8 @@ devices or host networking: the only inputs are the validated plan fields.
 
 A spec is a plain dict the driver maps onto the Docker API::
 
-    {"name", "image", "entrypoint", "command", "user", "environment", "labels",
-     "host_config": {...docker create_host_config kwargs...},
+    {"name", "image", "entrypoint", "command", "user", "working_dir", "environment",
+     "labels", "healthcheck", "host_config": {...docker create_host_config kwargs...},
      "mounts": [{"type": "volume"|"tmpfs", "source", "target", "read_only"}],
      "network": <network name or None>, "ipv4_address": <ip or None>}
 
@@ -15,6 +15,14 @@ Addressing: each app gets the internal bridge ``bdh-app-<id>`` with subnet
 ``<prefix>.<slot>.0/24``. The app is ``.2``, a companion ``.3``, and the
 shared gateway joins as ``.254`` (outbound apps: broker relay + egress proxy)
 or ``.253`` (network ``none``: broker relay only).
+
+App containers run the app's own image (``plan.image``, pinned by digest),
+but everything that decides how it runs is set here, not taken from the
+image: user, entrypoint, command, working dir, environment, mounts (only
+``/data`` and a ``/tmp`` tmpfs) and the health check (the image's
+``HEALTHCHECK`` is disabled). The driver refuses images that declare
+``VOLUME``s or set ``ENV`` beyond their base's, so nothing in the image can
+add anonymous volumes or environment.
 """
 import json
 
@@ -28,9 +36,9 @@ GATEWAY_NAME = "bdh-gateway"
 EGRESS_NETWORK = "bdh-egress"
 MANAGED = "bdh.managed"
 LOG_CONFIG = {"type": "json-file", "config": {"max-size": "1m", "max-file": "2"}}
-WORKER_MEMORY_MB = 512
-WORKER_PIDS = 256
 COMPANION_MEMORY_MB = 64
+HELPER_MEMORY_MB = 128
+NO_HEALTHCHECK = {"test": ["NONE"]}
 GO2RTC_PORT = 1984
 
 
@@ -42,12 +50,12 @@ def container_name(app_id, role="app"):
     return f"bdh-app-{app_id}" if role == "app" else f"bdh-app-{app_id}-{role}"
 
 
-def code_volume(app_id):
-    return f"bdh-app-{app_id}-code"
-
-
 def data_volume(app_id):
     return f"bdh-app-{app_id}-data"
+
+
+def snapshot_volume(app_id):
+    return f"bdh-app-{app_id}-data-snap"
 
 
 def subnet(cfg, slot):
@@ -170,21 +178,22 @@ def app_env(cfg, plan):
     return env
 
 
-def app_container(cfg, plan, image):
+def app_container(cfg, plan):
     lan = plan.network == NETWORK_LAN
     return {
         "name": container_name(plan.app_id),
-        "image": image,
+        "image": plan.image,
         "entrypoint": ["python", "-m", "bdh_sdk.runtime"],
-        "command": None,
+        "command": [],
         "user": UID,
+        "working_dir": "/tmp",
         "environment": app_env(cfg, plan),
         "labels": labels(plan.app_id, "app", {"bdh.version": plan.version}),
+        "healthcheck": NO_HEALTHCHECK,
         "host_config": _hardened(plan.memory_mb, cfg.pids_limit, 64,
                                  "host" if lan else app_network(plan.app_id), cfg.cpus),
         "mounts": [
             {"type": "volume", "source": data_volume(plan.app_id), "target": "/data", "read_only": False},
-            {"type": "volume", "source": code_volume(plan.app_id), "target": "/app", "read_only": True},
         ],
         "network": None if lan else app_network(plan.app_id),
         "ipv4_address": None if lan else app_ip(cfg, plan.slot),
@@ -234,32 +243,58 @@ def companion_container(cfg, plan, name):
     }
 
 
-def install_worker(cfg, image, app_id, version, wheels, step):
-    """A disposable container for one install step (see ``bdh_runtime.install``).
+def data_copy_container(app_id, image, action):
+    """A one-shot helper copying an app's ``/data`` volume (no network, app uid).
 
-    ``fetch`` downloads on the egress bridge (no app code runs); ``verify``
-    imports the app's PluginSpec with no network at all.
+    ``snapshot`` copies the data volume (read-only) into the empty snapshot
+    volume; ``restore`` replaces the data volume's contents with the
+    snapshot's. ``image`` is the app's own image (it has ``sh`` and ``cp``).
+    The destination is always mounted on ``/data``, which the base image
+    owns as the app uid, so Docker gives a new, empty volume that owner.
     """
-    if step not in ("fetch", "verify"):
-        raise ValueError(step)
-    request = {"app_id": app_id, "version": version,
-               "wheels": [{"url": w.url, "sha256": w.sha256} for w in wheels]}
-    env = {"BDH_INSTALL": json.dumps(request, separators=(",", ":")), "BDH_APP_ROOT": "/app"}
-    if cfg.allow_http:
-        env["BDH_ALLOW_HTTP"] = "1"
-    network = EGRESS_NETWORK if step == "fetch" else "none"
-    host = _hardened(WORKER_MEMORY_MB, WORKER_PIDS, 256, network, 1.0)
+    data, snap = data_volume(app_id), snapshot_volume(app_id)
+    if action == "snapshot":
+        src, dst = data, snap
+        script = "cp -a /src/. /data/"
+    elif action == "restore":
+        src, dst = snap, data
+        script = "find /data -mindepth 1 -delete && cp -a /src/. /data/"
+    else:
+        raise ValueError(action)
+    mounts = [{"type": "volume", "source": src, "target": "/src", "read_only": True},
+              {"type": "volume", "source": dst, "target": "/data", "read_only": False}]
     return {
-        "name": f"bdh-install-{app_id}-{step}",
+        "name": f"bdh-app-{app_id}-{action}",
         "image": image,
-        "entrypoint": ["python", "-m", "bdh_runtime.install"],
-        "command": [step],
+        "entrypoint": ["sh", "-c"],
+        "command": [script],
         "user": UID,
-        "environment": env,
-        "labels": labels(app_id, f"install-{step}"),
-        "host_config": host,
-        "mounts": [{"type": "volume", "source": code_volume(app_id), "target": "/app", "read_only": False}],
-        "network": None if network == "none" else EGRESS_NETWORK,
+        "working_dir": "/tmp",
+        "environment": {},
+        "labels": labels(app_id, action),
+        "healthcheck": NO_HEALTHCHECK,
+        "host_config": _hardened(HELPER_MEMORY_MB, 64, 8, "none", 1.0),
+        "mounts": mounts,
+        "network": None,
+        "ipv4_address": None,
+    }
+
+
+def manifest_probe(app_id, image):
+    """A never-started container used only to read ``/opt/bdh/app.json``."""
+    return {
+        "name": f"bdh-app-{app_id}-probe",
+        "image": image,
+        "entrypoint": ["true"],
+        "command": [],
+        "user": UID,
+        "working_dir": "/tmp",
+        "environment": {},
+        "labels": labels(app_id, "probe"),
+        "healthcheck": NO_HEALTHCHECK,
+        "host_config": _hardened(HELPER_MEMORY_MB, 16, 1, "none"),
+        "mounts": [],
+        "network": None,
         "ipv4_address": None,
     }
 

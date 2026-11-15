@@ -3,3 +3,5 @@
 fastapi>=0.115
 uvicorn>=0.30
 docker>=7.1
+# Verifies the build provenance attestation of every app image it pulls.
+sigstore>=4.0

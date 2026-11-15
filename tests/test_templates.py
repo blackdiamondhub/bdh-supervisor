@@ -3,25 +3,26 @@ import json
 import pytest
 
 from bdh_supervisor import templates as T
-from bdh_supervisor.models import AppPlan, Wheel
+from bdh_supervisor.models import AppPlan
 
 TOKEN = "ab" * 32
+IMAGE = "ghcr.io/blackdiamondlodge/bdh-app-hello@sha256:" + "c" * 64
 
 
 def plan(network="none", companions=(), memory_mb=96, slot=7):
-    return AppPlan(app_id="hello", version="1.0.0", slot=slot, network=network, memory_mb=memory_mb,
-                   token=TOKEN, companions=companions)
+    return AppPlan(app_id="hello", version="1.0.0", image=IMAGE, slot=slot, network=network,
+                   memory_mb=memory_mb, token=TOKEN, companions=companions)
 
 
 def all_specs(cfg):
-    wheels = [Wheel("https://example.test/a-1-py3-none-any.whl", "0" * 64)]
     specs = []
     for net in ("none", "outbound", "lan"):
         p = plan(net, companions=("go2rtc",))
-        specs.append(T.app_container(cfg, p, "runtime"))
+        specs.append(T.app_container(cfg, p))
         specs.append(T.companion_container(cfg, p, "go2rtc"))
-    specs.append(T.install_worker(cfg, "runtime", "hello", "1.0.0", wheels, "fetch"))
-    specs.append(T.install_worker(cfg, "runtime", "hello", "1.0.0", wheels, "verify"))
+    specs.append(T.data_copy_container("hello", IMAGE, "snapshot"))
+    specs.append(T.data_copy_container("hello", IMAGE, "restore"))
+    specs.append(T.manifest_probe("hello", IMAGE))
     specs.append(T.gateway_container(cfg, "supervisor"))
     return specs
 
@@ -56,7 +57,12 @@ def test_firewall_helper_only_gets_net_admin(cfg):
 
 
 def test_app_container_none(cfg):
-    spec = T.app_container(cfg, plan("none"), "runtime")
+    spec = T.app_container(cfg, plan("none"))
+    assert spec["image"] == IMAGE
+    # The supervisor, not the image, decides how the app runs.
+    assert spec["entrypoint"] == ["python", "-m", "bdh_sdk.runtime"] and spec["command"] == []
+    assert spec["user"] == "10001:10001" and spec["working_dir"] == "/tmp"
+    assert spec["healthcheck"] == {"test": ["NONE"]}
     assert spec["host_config"]["network_mode"] == "bdh-app-hello"
     assert spec["ipv4_address"] == "10.213.7.2"
     assert spec["host_config"]["mem_limit"] == "96m"
@@ -65,13 +71,12 @@ def test_app_container_none(cfg):
     assert "HTTP_PROXY" not in env and "HTTPS_PROXY" not in env
     assert env["BDH_APP_TOKEN"] == TOKEN
     assert env["BDH_HOST"] == "0.0.0.0" and env["BDH_PORT"] == "8000"
-    data, code = spec["mounts"]
-    assert (data["target"], data["read_only"]) == ("/data", False)
-    assert (code["target"], code["read_only"]) == ("/app", True)
+    [data] = spec["mounts"]
+    assert (data["source"], data["target"], data["read_only"]) == ("bdh-app-hello-data", "/data", False)
 
 
 def test_app_container_outbound_uses_proxy(cfg):
-    env = T.app_container(cfg, plan("outbound"), "runtime")["environment"]
+    env = T.app_container(cfg, plan("outbound"))["environment"]
     assert env["HTTPS_PROXY"] == "http://10.213.7.254:3128"
     assert env["BDH_BROKER_URL"] == "http://10.213.7.254:8099/_broker"
     assert "10.213.7.254" in env["NO_PROXY"]
@@ -79,7 +84,7 @@ def test_app_container_outbound_uses_proxy(cfg):
 
 def test_app_container_lan_uses_host_network(cfg):
     p = plan("lan")
-    spec = T.app_container(cfg, p, "runtime")
+    spec = T.app_container(cfg, p)
     assert spec["host_config"]["network_mode"] == "host"
     assert spec["network"] is None
     env = spec["environment"]
@@ -101,23 +106,22 @@ def test_upstream_and_network(cfg):
 
 
 def test_memory_limit_follows_plan(cfg):
-    assert T.app_container(cfg, plan(memory_mb=256), "rt")["host_config"]["mem_limit"] == "256m"
+    assert T.app_container(cfg, plan(memory_mb=256))["host_config"]["mem_limit"] == "256m"
 
 
-def test_install_worker_networks(cfg):
-    wheels = [Wheel("https://example.test/a-1-py3-none-any.whl", "0" * 64)]
-    fetch = T.install_worker(cfg, "runtime", "hello", "1.0.0", wheels, "fetch")
-    verify = T.install_worker(cfg, "runtime", "hello", "1.0.0", wheels, "verify")
-    assert fetch["host_config"]["network_mode"] == T.EGRESS_NETWORK
-    assert verify["host_config"]["network_mode"] == "none"
-    assert verify["network"] is None
-    req = json.loads(fetch["environment"]["BDH_INSTALL"])
-    assert req == {"app_id": "hello", "version": "1.0.0",
-                   "wheels": [{"url": wheels[0].url, "sha256": "0" * 64}]}
-    assert [m["source"] for m in fetch["mounts"]] == ["bdh-app-hello-code"]
+def test_data_copy_helpers(cfg):
+    snap = T.data_copy_container("hello", IMAGE, "snapshot")
+    restore = T.data_copy_container("hello", IMAGE, "restore")
+    for spec in (snap, restore):
+        assert spec["host_config"]["network_mode"] == "none" and spec["network"] is None
+        assert spec["entrypoint"] == ["sh", "-c"]
+        # The writable side is always /data so a new volume gets the app uid.
+        assert [(m["target"], m["read_only"]) for m in spec["mounts"]] == [("/src", True), ("/data", False)]
+    assert [m["source"] for m in snap["mounts"]] == ["bdh-app-hello-data", "bdh-app-hello-data-snap"]
+    assert [m["source"] for m in restore["mounts"]] == ["bdh-app-hello-data-snap", "bdh-app-hello-data"]
+    assert "find /data -mindepth 1 -delete" in restore["command"][0]
     with pytest.raises(ValueError):
-        T.install_worker(cfg, "runtime", "hello", "1.0.0", wheels, "shell")
-
+        T.data_copy_container("hello", IMAGE, "shell")
 
 def _go2rtc_args(cfg, p):
     spec = T.companion_container(cfg, p, "go2rtc")

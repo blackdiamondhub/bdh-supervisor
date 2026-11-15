@@ -32,13 +32,25 @@ class RuntimeDriver(ABC):
         """
 
     @abstractmethod
-    def refresh_runtime(self):
-        """Pull the runtime image; return its (possibly new) image id."""
+    def pull(self, app_id, ref):
+        """Pull ``ref`` (an :class:`~bdh_supervisor.models.ImageRef`) by digest and
+        check it can run here: built on ``ref.base`` (its layers extend the
+        base's), no ``VOLUME``s, no ``ENV`` beyond the base's, and its
+        ``/opt/bdh/app.json`` names this app and version. Return
+        ``{"manifest": {...}, "image_id": "sha256:..."}``."""
 
     @abstractmethod
-    def install(self, app_id, version, wheels):
-        """Install ``wheels`` as ``version`` in the app's code volume in disposable
-        worker containers; return the manifest dict the app's PluginSpec reports."""
+    def snapshot(self, app_id, image):
+        """Copy the app's data volume into its snapshot volume (using ``image``)."""
+
+    @abstractmethod
+    def restore(self, app_id, image):
+        """Replace the app's data volume contents with its snapshot."""
+
+    @abstractmethod
+    def gc(self, app_id, keep):
+        """Remove local images of the app that are not in ``keep`` (image ids);
+        never prunes, never touches other repositories."""
 
     @abstractmethod
     def start(self, plan):
@@ -50,8 +62,8 @@ class RuntimeDriver(ABC):
 
     @abstractmethod
     def remove(self, app_id, purge_data=False):
-        """Remove the app's containers, network and code volume (and data volume
-        when ``purge_data``)."""
+        """Remove the app's containers and network (and its data and snapshot
+        volumes when ``purge_data``)."""
 
     @abstractmethod
     def state(self, app_id) -> ContainerState:

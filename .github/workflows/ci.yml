@@ -22,14 +22,25 @@ jobs:
           pip install --no-deps "$(grep -o 'https://github.com/blackdiamondlodge/bdh-sdk/releases/download/[^ ]*\.whl' runtime/requirements.in)"
       - run: ruff check .
       - run: python -m pytest -q -p no:cacheprovider --deselect tests/test_integration_docker.py
+        env:
+          BDH_NETWORK_TESTS: "1"
 
   integration:
-    # Builds both images and the hello wheel, installs and runs hello through
-    # the real DockerDriver, probes the sandbox and enforces the memory budget.
+    # Builds both images, pushes the base and the hello app image (made by the
+    # SDK's builder, like the catalog does) to a local registry, then installs,
+    # runs, upgrades and rolls back hello through the real DockerDriver, probes
+    # the sandbox and enforces the memory budget.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sh scripts/build.sh
+      - uses: actions/checkout@v4
+        with:
+          repository: blackdiamondlodge/bdh-sdk
+          ref: v0
+          path: .sdk
+      - run: bash scripts/build.sh
+        env:
+          BDH_SDK: .sdk
       - run: sh scripts/integration.sh
         env:
           BDH_RSS_LIMIT_MB: "70"
@@ -38,7 +49,7 @@ jobs:
         run: |
           test -f dist/rss.json && cat dist/rss.json || true
           if [ -f dist/rss.json ]; then
-            python3 -c "import json; r=json.load(open('dist/rss.json')); print(f\"### hello app memory: {r['working_set_mb']} MB (limit {r['limit_mb']} MB)\")" >> "$GITHUB_STEP_SUMMARY"
+            python3 -c "import json; r=json.load(open('dist/rss.json')); print(f\"### hello app memory: working set {r['working_set_mb']} MB (limit {r['limit_mb']} MB), RSS {r['rss_mb']} MB, PSS {r['pss_mb']} MB\")" >> "$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@v4
         if: always()

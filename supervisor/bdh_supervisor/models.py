@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 APP_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$")
 TOKEN_RE = re.compile(r"^[0-9a-f]{64}$")
-SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 NETWORK_NONE = "none"
 NETWORK_OUTBOUND = "outbound"
@@ -47,9 +47,22 @@ def manifest_companions(manifest):
 
 
 @dataclass(frozen=True)
-class Wheel:
-    url: str
-    sha256: str
+class ImageRef:
+    """A catalog version's app image, pinned by digest.
+
+    ``image`` is ``<repo>@sha256:<hex>`` and ``base`` the bdh-app-runtime
+    image it was built on, also by digest. ``build`` changes whenever the
+    platform rebuilds the same version (e.g. on a new base).
+    """
+
+    version: str
+    image: str
+    base: str
+    build: str = ""
+
+    @property
+    def digest(self):
+        return self.image.rsplit("@", 1)[1]
 
 
 @dataclass(frozen=True)
@@ -60,6 +73,7 @@ class AppPlan:
 
     app_id: str
     version: str
+    image: str
     slot: int
     network: str
     memory_mb: int

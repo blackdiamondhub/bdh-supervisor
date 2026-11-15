@@ -3,8 +3,10 @@
 Every container it creates comes from :mod:`bdh_supervisor.templates`; this
 module only maps those specs onto the Docker API.
 """
+import io
 import json
 import logging
+import tarfile
 import urllib.request
 
 import docker
@@ -17,8 +19,11 @@ from .models import NETWORK_LAN
 
 log = logging.getLogger("bdh.supervisor.docker")
 
-MANIFEST_MARK = "BDH-MANIFEST "
 GATEWAY_IP_LABEL = "bdh.gateway_ip"
+APP_JSON = "/opt/bdh/app.json"
+BASE_LABEL = "org.blackdiamondlodge.bdh.runtime"
+HUB_API_LABEL = "org.blackdiamondlodge.bdh.hub_api"
+MAX_MANIFEST_BYTES = 256 * 1024
 
 
 class DockerDriver(RuntimeDriver):
@@ -31,12 +36,11 @@ class DockerDriver(RuntimeDriver):
     # -- shared pieces -------------------------------------------------
 
     def prepare(self):
-        self._ensure_image(self.cfg.runtime_image)
         self._ensure_image(self.cfg.supervisor_image)
         self._ensure_network(T.egress_network_spec(self.cfg))
         self.firewall_ok = self.apply_firewall()
         self._ensure_gateway()
-        return {"firewall": self.firewall_ok, "runtime_image": self._image_id(self.cfg.runtime_image)}
+        return {"firewall": self.firewall_ok}
 
     def apply_firewall(self):
         if self.cfg.firewall == "off":
@@ -50,16 +54,6 @@ class DockerDriver(RuntimeDriver):
             log.error("firewall helper exited %s: %s", code, output[-2000:])
             return False
         return True
-
-    def refresh_runtime(self):
-        try:
-            self.api.pull(self.cfg.runtime_image)
-        except APIError as exc:
-            log.warning("cannot pull %s: %s", self.cfg.runtime_image, exc)
-        return self._image_id(self.cfg.runtime_image)
-
-    def runtime_image_id(self):
-        return self._image_id(self.cfg.runtime_image)
 
     def _image_id(self, ref):
         try:
@@ -145,7 +139,9 @@ class DockerDriver(RuntimeDriver):
         created = self.api.create_container(
             spec["image"], command=spec["command"], name=spec["name"], user=spec["user"],
             environment=spec["environment"], labels=spec["labels"], entrypoint=spec["entrypoint"],
+            working_dir=spec.get("working_dir"), healthcheck=spec.get("healthcheck"),
             host_config=host_config, networking_config=networking, detach=True,
+            network_disabled=spec["host_config"].get("network_mode") == "none",
         )
         if start:
             self.api.start(created["Id"])
@@ -175,31 +171,100 @@ class DockerDriver(RuntimeDriver):
         except NotFound:
             self.client.volumes.create(name, labels=T.labels(app_id, role))
 
-    def install(self, app_id, version, wheels):
-        self._ensure_image(self.cfg.runtime_image)
-        self._ensure_network(T.egress_network_spec(self.cfg))
-        self._ensure_volume(T.code_volume(app_id), app_id, "code")
-        out = []
-        for step in ("fetch", "verify"):
-            spec = T.install_worker(self.cfg, self.cfg.runtime_image, app_id, version, wheels, step)
-            code, output = self._run_once(spec, self.cfg.install_timeout)
-            out.append(output)
-            if code != 0:
-                raise DriverError(f"install {step} failed ({code}): {output.strip()[-1500:]}")
-        for line in reversed(out[-1].splitlines()):
-            if line.startswith(MANIFEST_MARK):
-                data = json.loads(line[len(MANIFEST_MARK):])
-                return data["manifest"]
-        raise DriverError("install verify printed no manifest")
+    # -- images ----------------------------------------------------------
+
+    def _pull(self, ref):
+        try:
+            self.api.pull(ref)
+            return self.api.inspect_image(ref)
+        except (APIError, NotFound) as exc:
+            raise DriverError(f"cannot pull {ref}: {exc}") from exc
+
+    def pull(self, app_id, ref):
+        base = self._pull(ref.base)
+        app = self._pull(ref.image)
+        check_image(app, base, self.cfg.hub_api)
+        manifest = self._read_manifest(app_id, ref.image)
+        if manifest.get("id") != app_id:
+            raise DriverError(f"{ref.image} is app {manifest.get('id')!r}, not {app_id!r}")
+        if manifest.get("version") != ref.version:
+            raise DriverError(f"{ref.image} is version {manifest.get('version')!r}, not {ref.version!r}")
+        return {"manifest": manifest, "image_id": app["Id"]}
+
+    def _read_manifest(self, app_id, image):
+        spec = T.manifest_probe(app_id, image)
+        cid = self._create(spec)
+        try:
+            stream, _ = self.api.get_archive(cid, APP_JSON)
+            raw = b"".join(stream)
+        except NotFound as exc:
+            raise DriverError(f"{image} has no {APP_JSON}; was it built by the bdh builder?") from exc
+        finally:
+            self._remove_container(cid)
+        try:
+            with tarfile.open(fileobj=io.BytesIO(raw)) as tar:
+                member = tar.next()
+                if member is None or not member.isfile() or member.size > MAX_MANIFEST_BYTES:
+                    raise DriverError(f"{image}: bad {APP_JSON}")
+                data = json.loads(tar.extractfile(member).read())
+        except (tarfile.TarError, ValueError) as exc:
+            raise DriverError(f"{image}: unreadable {APP_JSON}: {exc}") from exc
+        if not isinstance(data, dict):
+            raise DriverError(f"{image}: {APP_JSON} is not an object")
+        return data
+
+    def snapshot(self, app_id, image):
+        snap = T.snapshot_volume(app_id)
+        try:
+            self.client.volumes.get(snap).remove(force=True)
+        except NotFound:
+            pass
+        self._ensure_volume(T.data_volume(app_id), app_id, "data")
+        self._ensure_volume(snap, app_id, "snapshot")
+        self._copy(app_id, image, "snapshot")
+
+    def restore(self, app_id, image):
+        try:
+            self.client.volumes.get(T.snapshot_volume(app_id))
+        except NotFound as exc:
+            raise DriverError(f"{app_id} has no data snapshot") from exc
+        self._ensure_volume(T.data_volume(app_id), app_id, "data")
+        self._copy(app_id, image, "restore")
+
+    def _copy(self, app_id, image, action):
+        self._ensure_image(image)
+        code, output = self._run_once(T.data_copy_container(app_id, image, action), self.cfg.snapshot_timeout)
+        if code != 0:
+            raise DriverError(f"{action} of {app_id} data failed ({code}): {output.strip()[-1500:]}")
+
+    def gc(self, app_id, keep):
+        name = f"{self.cfg.image_prefix}bdh-app-{app_id}"
+        removed = []
+        for image in self.api.images(name=name, all=False):
+            if image["Id"] in keep:
+                continue
+            digests = image.get("RepoDigests") or []
+            if not digests or not all(d.startswith(name + "@") for d in digests):
+                continue  # shared with another repository (e.g. a base): leave it
+            # (The containerd image store lists ``repo@digest`` as a tag too.)
+            if any(t for t in image.get("RepoTags") or [] if not t.startswith((name + ":", name + "@"))):
+                continue
+            try:
+                self.api.remove_image(image["Id"], force=False, noprune=False)
+                removed.append(image["Id"])
+            except (APIError, NotFound) as exc:
+                log.info("gc: keeping %s: %s", image["Id"], exc)
+        return removed
+
+    # -- running -------------------------------------------------------
 
     def start(self, plan):
         if plan.network != NETWORK_LAN and self.cfg.firewall == "required" and not self.firewall_ok:
             self.firewall_ok = self.apply_firewall()
             if not self.firewall_ok:
                 raise DriverError("the host firewall is not in place; refusing to start app containers")
-        self._ensure_image(self.cfg.runtime_image)
+        self._ensure_image(plan.image)
         self._ensure_volume(T.data_volume(plan.app_id), plan.app_id, "data")
-        self._ensure_volume(T.code_volume(plan.app_id), plan.app_id, "code")
         self._remove_app_containers(plan.app_id)
         net_spec = T.network_spec(self.cfg, plan)
         if net_spec:
@@ -211,7 +276,7 @@ class DockerDriver(RuntimeDriver):
             self._remove_network(plan.app_id)
         for name in plan.companions:
             self._create(T.companion_container(self.cfg, plan, name), start=True)
-        self._create(T.app_container(self.cfg, plan, self.cfg.runtime_image), start=True)
+        self._create(T.app_container(self.cfg, plan), start=True)
 
     def _ensure_gateway_running(self):
         try:
@@ -253,7 +318,7 @@ class DockerDriver(RuntimeDriver):
     def remove(self, app_id, purge_data=False):
         self._remove_app_containers(app_id)
         self._remove_network(app_id)
-        names = [T.code_volume(app_id)] + ([T.data_volume(app_id)] if purge_data else [])
+        names = [T.data_volume(app_id), T.snapshot_volume(app_id)] if purge_data else []
         for name in names:
             try:
                 self.client.volumes.get(name).remove(force=True)
@@ -304,3 +369,27 @@ class DockerDriver(RuntimeDriver):
         except (OSError, ValueError):
             return False
 
+
+def check_image(app, base, hub_api):
+    """Can ``app`` (``docker inspect`` of the app image) run on this supervisor?
+
+    This is a compatibility check, not a security one (attestation is): the
+    base must be a bdh runtime for this hub API, the app image's layers must
+    extend the base's (so it really was built ``FROM`` it), and the image must
+    not declare volumes or change the base's environment.
+    """
+    base_cfg = base.get("Config") or {}
+    labels = base_cfg.get("Labels") or {}
+    if labels.get(BASE_LABEL) != "1":
+        raise DriverError("the base is not a bdh-app-runtime image")
+    if labels.get(HUB_API_LABEL) != str(hub_api):
+        raise DriverError(f"the base is for hub API {labels.get(HUB_API_LABEL)}, this supervisor runs {hub_api}")
+    base_layers = (base.get("RootFS") or {}).get("Layers") or []
+    app_layers = (app.get("RootFS") or {}).get("Layers") or []
+    if not base_layers or app_layers[:len(base_layers)] != base_layers:
+        raise DriverError("the app image is not built on its catalog base (layers differ)")
+    app_cfg = app.get("Config") or {}
+    if app_cfg.get("Volumes"):
+        raise DriverError(f"the app image declares volumes: {sorted(app_cfg['Volumes'])}")
+    if sorted(app_cfg.get("Env") or []) != sorted(base_cfg.get("Env") or []):
+        raise DriverError("the app image changes its base's environment")

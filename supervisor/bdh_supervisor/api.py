@@ -15,6 +15,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
 
+from . import attest
 from .catalog import Catalog
 from .driver import DriverError
 from .manager import ConflictError, Manager, NotFoundError
@@ -65,8 +66,9 @@ class InstallRequest(BaseModel):
         return v
 
 
-def create_app(cfg, driver, catalog=None, run_background=True):
-    manager = Manager(cfg, driver, catalog or Catalog(cfg.catalog_url, cfg.allow_http))
+def create_app(cfg, driver, catalog=None, verifier=None, run_background=True):
+    catalog = catalog or Catalog(cfg.catalog_url, cfg.image_prefix, cfg.allow_http)
+    manager = Manager(cfg, driver, catalog, verifier or attest.from_config(cfg))
     expected = f"Bearer {cfg.token}".encode()
 
     def auth(request: Request):
@@ -108,7 +110,8 @@ def create_app(cfg, driver, catalog=None, run_background=True):
     async def healthz():
         return {"ok": True, "prepared": manager.prepared, "error": manager.prepare_error,
                 "firewall": manager.prepare_info.get("firewall"), "hub_api": cfg.hub_api,
-                "runtime_image": cfg.runtime_image, "apps": len(manager.apps)}
+                "attestation": cfg.attestation, "last_catalog_poll": manager.last_poll,
+                "apps": len(manager.apps)}
 
     @app.get("/apps")
     async def list_apps():
@@ -157,8 +160,12 @@ def create_app(cfg, driver, catalog=None, run_background=True):
         manager.get(app_id)
         return {"app_id": app_id, **await asyncio.to_thread(driver.stats, app_id)}
 
-    @app.post("/runtime/refresh")
+    @app.post("/apps/{app_id}/rollback")
+    async def rollback(app_id: str = Depends(app_id_param)):
+        return await manager.rollback(app_id)
+
+    @app.post("/catalog/refresh")
     async def refresh():
-        return await manager.refresh_runtime()
+        return await manager.poll_catalog()
 
     return app

@@ -1,4 +1,4 @@
-"""App state and lifecycle: installs, starts, idle stops, crash backoff."""
+"""App state and lifecycle: installs/upgrades, rollback, starts, idle stops, crash backoff."""
 import asyncio
 import json
 import logging
@@ -7,10 +7,12 @@ import time
 from pathlib import Path
 
 from . import templates as T
+from .attest import AttestationError, NoVerification
 from .catalog import CatalogError
 from .driver import DriverError
 from .models import (
     AppPlan,
+    ImageRef,
     clamp_memory,
     effective_network,
     manifest_companions,
@@ -23,6 +25,7 @@ RUNNING, STOPPED, IDLE = "running", "stopped", "idle"
 PUBLIC_FIELDS = (
     "app_id", "version", "slot", "approved_network", "allow_lan", "status", "error",
     "installed_version", "desired", "failures", "last_exit", "last_activity", "manifest",
+    "image", "build", "pinned",
 )
 
 
@@ -35,10 +38,11 @@ class ConflictError(Exception):
 
 
 class Manager:
-    def __init__(self, cfg, driver, catalog, clock=time.time):
+    def __init__(self, cfg, driver, catalog, verifier=None, clock=time.time):
         self.cfg = cfg
         self.driver = driver
         self.catalog = catalog
+        self.verifier = verifier or NoVerification()
         self.clock = clock
         self.path = Path(cfg.state_dir) / "apps.json"
         self.apps = self._load()
@@ -47,7 +51,8 @@ class Manager:
         self.prepared = False
         self.prepare_info = {}
         self.prepare_error = ""
-        self.runtime_image_id = ""
+        self.resumed = False
+        self.last_poll = None
 
     # -- persistence -----------------------------------------------------
 
@@ -87,6 +92,7 @@ class Manager:
         return AppPlan(
             app_id=rec["app_id"],
             version=rec.get("installed_version") or rec["version"],
+            image=rec.get("image") or "",
             slot=rec["slot"],
             network=effective_network(rec["approved_network"], manifest.get("network", rec["approved_network"]),
                                       rec.get("allow_lan", False)),
@@ -105,15 +111,18 @@ class Manager:
         out["lifecycle"] = plan.lifecycle
         out["memory_mb"] = plan.memory_mb
         out["upstream"] = T.upstream(self.cfg, plan)
+        out["previous_version"] = (rec.get("previous") or {}).get("version")
+        out["rollback_available"] = bool((rec.get("previous") or {}).get("snapshot"))
+        out["upgrade_stage"] = (rec.get("upgrade") or {}).get("stage")
         if state is not None:
             out["running"] = state.running
             out["container_status"] = state.status
         return out
 
-    # -- install ---------------------------------------------------------
+    # -- install / upgrade -----------------------------------------------
 
     async def put(self, app_id, req):
-        """Record what the hub wants and install it in the background."""
+        """Record what the hub wants and sync it (install/upgrade) in the background."""
         for other_id, other in self.apps.items():
             if other_id != app_id and other["slot"] == req["slot"]:
                 raise ConflictError(f"slot {req['slot']} is used by {other_id}")
@@ -122,24 +131,22 @@ class Manager:
             fresh = rec is None
             if fresh:
                 rec = {"app_id": app_id, "installed_version": "", "manifest": {}, "desired": IDLE,
-                       "failures": 0, "next_start": 0, "last_start": 0, "last_activity": 0,
-                       "last_exit": None, "error": "", "status": INSTALLING}
+                       "image": "", "image_id": "", "base": "", "build": "", "previous": None,
+                       "upgrade": None, "failures": 0, "next_start": 0, "last_start": 0,
+                       "last_activity": 0, "last_exit": None, "error": "", "status": INSTALLING}
             new = {"token": req["token"], "slot": req["slot"], "approved_network": req["network"],
                    "allow_lan": req["allow_lan"]}
             changed_runtime = not fresh and any(rec.get(k) != v for k, v in new.items())
             rec.update({
-                "version": req["version"], **new,
+                "version": req["version"], **new, "pinned": False,
                 "time_zone": req["time_zone"], "hub_brand": req["hub_brand"],
             })
             self.apps[app_id] = rec
-            needs_install = rec.get("installed_version") != req["version"] or rec["status"] == FAILED
-            if needs_install:
+            if rec.get("installed_version") != req["version"] or rec["status"] == FAILED:
                 rec["status"], rec["error"] = INSTALLING, ""
             self.save()
-        if needs_install:
-            self._spawn(self._install(app_id))
-        elif changed_runtime and rec.get("desired") == RUNNING:
-            self._spawn(self._restart_quietly(app_id))
+        # Always sync: the same version may have been rebuilt (new digest).
+        self._spawn(self._sync(app_id, restart=changed_runtime))
         return self.view(rec)
 
     def _spawn(self, coro):
@@ -148,32 +155,150 @@ class Manager:
         task.add_done_callback(self.tasks.discard)
         return task
 
-    async def _install(self, app_id):
+    def _keep(self):
+        """Image ids GC must keep: every app's current, previous and in-flight image."""
+        keep = set()
+        for rec in self.apps.values():
+            keep.add(rec.get("image_id"))
+            keep.add((rec.get("previous") or {}).get("image_id"))
+            keep.add((rec.get("upgrade") or {}).get("image_id"))
+        keep.discard(None)
+        keep.discard("")
+        return keep
+
+    async def _gc(self, app_id):
+        try:
+            removed = await asyncio.to_thread(self.driver.gc, app_id, self._keep())
+            if removed:
+                log.info("gc %s: removed %s", app_id, ", ".join(removed))
+        except (DriverError, OSError, Exception) as exc:  # noqa: BLE001 - GC must never break an install
+            log.warning("gc %s failed: %s", app_id, exc)
+
+    async def _sync(self, app_id, restart=False, force=True):
+        """Bring the app to the catalog's image for its version.
+
+        Upgrades are staged in ``rec["upgrade"]`` and saved after every step
+        (``pending`` -> ``verified`` -> ``pulled`` -> ``snapshot``), so a
+        supervisor restart in the middle resumes where it stopped. Every step
+        is idempotent.
+        """
+        start_after = False
         async with self.lock(app_id):
             rec = self.apps.get(app_id)
             if rec is None:
                 return
             version = rec["version"]
+            up = rec.get("upgrade")
             try:
-                wheels = await asyncio.to_thread(self.catalog.wheels, app_id, version, self.cfg.hub_api)
-                manifest = await asyncio.to_thread(self.driver.install, app_id, version, wheels)
-                if manifest.get("id") != app_id:
-                    raise DriverError(f"installed manifest is for {manifest.get('id')!r}")
-            except (CatalogError, DriverError, OSError) as exc:
-                log.error("install %s %s failed: %s", app_id, version, exc)
-                if self.apps.get(app_id) is rec:
-                    rec["status"], rec["error"] = FAILED, str(exc)[:2000]
-                    self.save()
-                return
-            if self.apps.get(app_id) is not rec or rec["version"] != version:
-                return
-            rec.update({"status": INSTALLED, "error": "", "installed_version": version,
-                        "manifest": manifest, "failures": 0, "next_start": 0})
+                if up and up.get("version") == version:
+                    ref = ImageRef(up["version"], up["image"], up["base"], up.get("build", ""))
+                else:
+                    ref = await asyncio.to_thread(self.catalog.image, app_id, version, self.cfg.hub_api, force)
+            except (CatalogError, OSError) as exc:
+                if rec.get("installed_version") == version and rec.get("image"):
+                    # Offline (or the catalog dropped it): keep running what we have.
+                    log.warning("sync %s: catalog unavailable, keeping %s: %s", app_id, rec["image"], exc)
+                    if rec["status"] != INSTALLED:
+                        rec["status"], rec["error"] = INSTALLED, ""
+                        self.save()
+                    start_after = restart and rec.get("desired") == RUNNING
+                else:
+                    self._fail(rec, f"catalog: {exc}")
+                    return
+            else:
+                if rec.get("installed_version") == version and rec.get("image") == ref.image:
+                    if rec.get("upgrade") or rec["status"] != INSTALLED:
+                        rec.update({"upgrade": None, "status": INSTALLED, "error": ""})
+                        self.save()
+                    start_after = restart and rec.get("desired") == RUNNING
+                else:
+                    start_after = await self._upgrade(rec, ref)
+        if start_after:
+            await self._restart_quietly(app_id)
+
+    async def _upgrade(self, rec, ref):
+        app_id = rec["app_id"]
+        up = rec.get("upgrade")
+        if not up or up.get("image") != ref.image:
+            up = {"version": ref.version, "image": ref.image, "base": ref.base, "build": ref.build,
+                  "stage": "pending"}
+            rec["upgrade"] = up
+        rec["status"], rec["error"] = INSTALLING, ""
+        self.save()
+        stopped = False
+        try:
+            if up["stage"] == "pending":
+                await asyncio.to_thread(self.verifier.verify, ref)
+                up["stage"] = "verified"
+                self.save()
+            if up["stage"] == "verified":
+                result = await asyncio.to_thread(self.driver.pull, app_id, ref)
+                up.update(manifest=result["manifest"], image_id=result["image_id"], stage="pulled")
+                self.save()
+            if up["stage"] == "pulled":
+                if rec.get("image"):
+                    await asyncio.to_thread(self.driver.stop, app_id)
+                    stopped = True
+                    await asyncio.to_thread(self.driver.snapshot, app_id, rec["image"])
+                up["stage"] = "snapshot"
+                self.save()
+        except (AttestationError, CatalogError, DriverError, OSError) as exc:
+            log.error("install %s %s failed: %s", app_id, ref.version, exc)
+            rec["upgrade"] = None
+            self._fail(rec, str(exc))
+            # The old version (if any) is untouched; bring it back if it was up.
+            return stopped and rec.get("desired") == RUNNING
+        previous = None
+        if rec.get("image"):
+            previous = {"version": rec.get("installed_version"), "image": rec["image"],
+                        "image_id": rec.get("image_id", ""), "base": rec.get("base", ""),
+                        "build": rec.get("build", ""), "manifest": rec.get("manifest") or {},
+                        "snapshot": True}
+        rec.update({
+            "previous": previous or rec.get("previous"), "installed_version": ref.version,
+            "image": ref.image, "image_id": up.get("image_id", ""), "base": ref.base, "build": ref.build,
+            "manifest": up.get("manifest") or {}, "upgrade": None, "status": INSTALLED, "error": "",
+            "failures": 0, "next_start": 0,
+        })
+        self.save()
+        log.info("installed %s %s (%s)", app_id, ref.version, ref.image)
+        await self._gc(app_id)
+        return rec.get("desired") == RUNNING or rec["manifest"].get("lifecycle") == "always"
+
+    def _fail(self, rec, reason):
+        if self.apps.get(rec["app_id"]) is rec:
+            rec["status"], rec["error"] = FAILED, reason[:2000]
             self.save()
-            log.info("installed %s %s", app_id, version)
-            restart = rec.get("desired") == RUNNING or manifest.get("lifecycle") == "always"
+
+    async def rollback(self, app_id):
+        """Go back to the previous image and the data snapshot taken before the upgrade."""
+        async with self.lock(app_id):
+            rec = self.get(app_id)
+            prev = rec.get("previous")
+            if rec.get("upgrade"):
+                raise ConflictError(f"{app_id} is being upgraded")
+            if not prev or not prev.get("snapshot"):
+                raise ConflictError(f"{app_id} has no previous version with a data snapshot")
+            await asyncio.to_thread(self.driver.stop, app_id)
+            await asyncio.to_thread(self.driver.restore, app_id, prev["image"])
+            current = {"version": rec.get("installed_version"), "image": rec.get("image", ""),
+                       "image_id": rec.get("image_id", ""), "base": rec.get("base", ""),
+                       "build": rec.get("build", ""), "manifest": rec.get("manifest") or {},
+                       "snapshot": False}
+            rec.update({
+                "version": prev["version"], "installed_version": prev["version"], "image": prev["image"],
+                "image_id": prev.get("image_id", ""), "base": prev.get("base", ""),
+                "build": prev.get("build", ""), "manifest": prev.get("manifest") or {},
+                "previous": current, "status": INSTALLED, "error": "", "failures": 0, "next_start": 0,
+                # Until the hub PUTs again, catalog polls must not re-upgrade it.
+                "pinned": True,
+            })
+            self.save()
+            log.warning("rolled %s back to %s", app_id, prev["version"])
+            restart = rec.get("desired") == RUNNING or rec["manifest"].get("lifecycle") == "always"
         if restart:
             await self._restart_quietly(app_id)
+        return self.view(rec)
 
     async def _restart_quietly(self, app_id):
         try:
@@ -186,8 +311,10 @@ class Manager:
     async def start(self, app_id, wait=True):
         async with self.lock(app_id):
             rec = self.get(app_id)
-            if rec["status"] != INSTALLED and not rec.get("installed_version"):
+            if not rec.get("installed_version") or not rec.get("image"):
                 raise ConflictError(f"{app_id} is not installed ({rec['status']})")
+            if rec.get("upgrade"):
+                raise ConflictError(f"{app_id} is being upgraded")
             now = self.clock()
             rec.update({"desired": RUNNING, "last_activity": now, "last_start": now, "next_start": 0})
             plan = self.plan(rec)
@@ -233,6 +360,7 @@ class Manager:
             await asyncio.to_thread(self.driver.remove, app_id, purge_data)
             del self.apps[app_id]
             self.save()
+            await self._gc(app_id)
         self.locks.pop(app_id, None)
 
     async def status(self, app_id):
@@ -261,7 +389,6 @@ class Manager:
         try:
             self.prepare_info = await asyncio.to_thread(self.driver.prepare)
             self.prepared, self.prepare_error = True, ""
-            self.runtime_image_id = self.prepare_info.get("runtime_image", "") or self.runtime_image_id
         except (DriverError, OSError, Exception) as exc:  # noqa: BLE001 - keep the loop alive
             self.prepare_error = str(exc)
             log.error("prepare failed: %s", exc)
@@ -269,7 +396,7 @@ class Manager:
 
     async def reconcile_app(self, app_id):
         rec = self.apps.get(app_id)
-        if rec is None or not rec.get("installed_version"):
+        if rec is None or not rec.get("installed_version") or rec.get("upgrade"):
             return
         lock = self.lock(app_id)
         if lock.locked():
@@ -306,33 +433,43 @@ class Manager:
                 self._record_failure(rec, str(exc))
             self.save()
 
-    async def refresh_runtime(self):
-        new_id = await asyncio.to_thread(self.driver.refresh_runtime)
-        restarted = []
-        if new_id:
-            self.runtime_image_id = new_id
-            for app_id, rec in list(self.apps.items()):
-                if rec.get("desired") != RUNNING:
-                    continue
-                state = await asyncio.to_thread(self.driver.state, app_id)
-                if state.running and state.image_id and state.image_id != new_id:
-                    await self._restart_quietly(app_id)
-                    restarted.append(app_id)
-        return {"runtime_image": new_id, "restarted": restarted}
+    async def resume(self):
+        """Finish upgrades a restart interrupted (Watchtower may restart us mid-way)."""
+        for app_id, rec in list(self.apps.items()):
+            if rec.get("upgrade") or rec.get("status") == INSTALLING:
+                log.info("resuming sync of %s", app_id)
+                self._spawn(self._sync(app_id))
+        self.resumed = True
+
+    async def poll_catalog(self):
+        """Sync every installed app with the catalog: a new digest for its version
+        (a platform rebuild, e.g. on a new base) is an upgrade."""
+        synced = []
+        for app_id, rec in list(self.apps.items()):
+            if (rec.get("installed_version") and not rec.get("upgrade") and rec.get("status") != FAILED
+                    and not rec.get("pinned")):
+                before = rec.get("image")
+                await self._sync(app_id, force=False)
+                if rec.get("image") != before:
+                    synced.append(app_id)
+        self.last_poll = self.clock()
+        return {"upgraded": synced}
 
     async def run_forever(self):
-        last_prepare = last_pull = 0.0
+        last_prepare = last_poll = 0.0
         while True:
             now = time.monotonic()
             try:
                 if not self.prepared or now - last_prepare > self.cfg.firewall_interval:
                     if await self.prepare():
                         last_prepare = now
-                        if not last_pull:
-                            last_pull = now
-                if self.prepared and now - last_pull > self.cfg.runtime_pull_interval:
-                    last_pull = now
-                    await self.refresh_runtime()
+                        if not last_poll:
+                            last_poll = now
+                if self.prepared and not self.resumed:
+                    await self.resume()
+                if self.prepared and now - last_poll > self.cfg.catalog_poll_interval:
+                    last_poll = now
+                    await self.poll_catalog()
                 for app_id in list(self.apps):
                     await self.reconcile_app(app_id)
             except Exception:  # noqa: BLE001 - the loop must survive anything
