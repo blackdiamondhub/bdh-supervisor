@@ -8,6 +8,8 @@ on:
 permissions:
   contents: read
   packages: write
+  id-token: write
+  attestations: write
 
 concurrency:
   group: publish
@@ -28,6 +30,7 @@ jobs:
         id: api
         run: echo "hub_api=$(sed -n 's/^ARG HUB_API=//p' runtime/Dockerfile)" >> "$GITHUB_OUTPUT"
       - name: bdh-app-runtime
+        id: runtime
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -37,7 +40,19 @@ jobs:
             ghcr.io/blackdiamondlodge/bdh-app-runtime:hub-api-${{ steps.api.outputs.hub_api }}
             ghcr.io/blackdiamondlodge/bdh-app-runtime:sha-${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/blackdiamondlodge/bdh-app-runtime
+          subject-digest: ${{ steps.runtime.outputs.digest }}
+          push-to-registry: true
+      - name: Base digest
+        # The catalog builder builds every app FROM this digest (it resolves
+        # hub-api-N itself; a new digest there means a rebuild of all apps).
+        run: |
+          echo "ghcr.io/blackdiamondlodge/bdh-app-runtime@${{ steps.runtime.outputs.digest }}"
+          echo "### bdh-app-runtime: \`ghcr.io/blackdiamondlodge/bdh-app-runtime@${{ steps.runtime.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
       - name: bdh-supervisor
+        id: supervisor
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -47,3 +62,8 @@ jobs:
             ghcr.io/blackdiamondlodge/bdh-supervisor:latest
             ghcr.io/blackdiamondlodge/bdh-supervisor:sha-${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-name: ghcr.io/blackdiamondlodge/bdh-supervisor
+          subject-digest: ${{ steps.supervisor.outputs.digest }}
+          push-to-registry: true

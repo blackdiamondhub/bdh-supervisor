@@ -4,12 +4,14 @@ import os
 
 import pytest
 
+from bdh_supervisor.attest import AttestationError
 from bdh_supervisor.catalog import CatalogError
 from bdh_supervisor.driver import DriverError
 from bdh_supervisor.manager import (
     FAILED,
     IDLE,
     INSTALLED,
+    INSTALLING,
     RUNNING,
     STOPPED,
     ConflictError,
@@ -17,7 +19,7 @@ from bdh_supervisor.manager import (
     NotFoundError,
 )
 
-from .conftest import TOKEN
+from .conftest import TOKEN, image_for
 
 
 def request(**kw):
@@ -28,8 +30,8 @@ def request(**kw):
 
 
 @pytest.fixture
-def manager(cfg, driver, catalog, clock):
-    return Manager(cfg, driver, catalog, clock=clock)
+def manager(cfg, driver, catalog, verifier, clock):
+    return Manager(cfg, driver, catalog, verifier, clock=clock)
 
 
 async def settle(manager):
@@ -43,16 +45,21 @@ async def installed(manager, app_id="hello", **kw):
     return manager.apps[app_id]
 
 
-async def test_put_installs_in_background(manager, driver, catalog):
+async def test_put_installs_in_background(manager, driver, catalog, verifier):
     view = await manager.put("hello", request())
     assert view["status"] == "installing"
     assert view["upstream"] == "http://10.213.3.2:8000"
     assert "token" not in view
     await settle(manager)
     rec = manager.apps["hello"]
+    image = image_for("hello", "1.0.0")
     assert rec["status"] == INSTALLED and rec["installed_version"] == "1.0.0"
+    assert rec["image"] == image and rec["image_id"] == driver.image_id(image)
+    assert rec["previous"] is None and rec["upgrade"] is None
     assert catalog.calls == [("hello", "1.0.0", 2)]
-    assert [c[0] for c in driver.calls] == ["install"]
+    assert verifier.verified == [image]
+    # A fresh install has no data to snapshot.
+    assert [c[0] for c in driver.calls] == ["pull", "gc"]
 
 
 async def test_state_is_persisted_privately(manager, cfg, driver, catalog, clock):
@@ -62,6 +69,13 @@ async def test_state_is_persisted_privately(manager, cfg, driver, catalog, clock
     assert json.load(open(path))["apps"]["hello"]["installed_version"] == "1.0.0"
     again = Manager(cfg, driver, catalog, clock=clock)
     assert again.apps["hello"]["status"] == INSTALLED
+
+
+async def test_unattested_image_is_refused(manager, driver, verifier):
+    verifier.error = AttestationError("no attestations found")
+    rec = await installed(manager)
+    assert rec["status"] == FAILED and "no attestations" in rec["error"]
+    assert not driver.named("pull") and not rec["installed_version"]
 
 
 async def test_install_failure_is_reported_and_retried(manager, driver, catalog):
@@ -75,16 +89,25 @@ async def test_install_failure_is_reported_and_retried(manager, driver, catalog)
     assert rec["status"] == INSTALLED
 
 
-async def test_manifest_for_another_app_is_rejected(manager, driver):
-    driver.manifests["hello"] = {"id": "evil"}
+async def test_pull_failure_is_reported(manager, driver):
+    driver.pull_error = "the app image is not built on its catalog base"
     rec = await installed(manager)
-    assert rec["status"] == FAILED and "evil" in rec["error"]
+    assert rec["status"] == FAILED and "catalog base" in rec["error"]
 
 
-async def test_same_version_put_does_not_reinstall(manager, driver):
+async def test_same_version_put_does_not_reinstall(manager, driver, catalog):
     await installed(manager)
     await installed(manager)
-    assert [c[0] for c in driver.calls] == ["install"]
+    assert len(driver.named("pull")) == 1
+    assert len(catalog.calls) == 2
+
+
+async def test_same_version_new_digest_is_an_upgrade(manager, driver, catalog):
+    await installed(manager)
+    catalog.builds["hello"] = "rebuild-2"
+    rec = await installed(manager)
+    assert rec["image"] == image_for("hello", "1.0.0", "rebuild-2") and rec["build"] == "rebuild-2"
+    assert rec["previous"]["image"] == image_for("hello", "1.0.0")
 
 
 async def test_slot_conflict(manager):
@@ -219,7 +242,86 @@ async def test_upgrade_restarts_running_app(manager, driver):
     await installed(manager)
     await manager.start("hello")
     await installed(manager, version="1.1.0")
-    assert driver.started()[-1].version == "1.1.0"
+    plan = driver.started()[-1]
+    assert plan.version == "1.1.0" and plan.image == image_for("hello", "1.1.0")
+
+
+async def test_upgrade_snapshots_data_keeps_previous_and_gcs(manager, driver):
+    await installed(manager)
+    await manager.start("hello")
+    v1, v1_id = image_for("hello", "1.0.0"), driver.image_id(image_for("hello", "1.0.0"))
+    driver.calls.clear()
+    rec = await installed(manager, version="1.1.0")
+    names = [c[0] for c in driver.calls]
+    # Stop before the snapshot so /data is quiescent; snapshot with the old image.
+    assert names.index("stop") < names.index("snapshot") < names.index("gc") < names.index("start")
+    assert ("snapshot", "hello", v1) in driver.calls
+    assert rec["previous"]["version"] == "1.0.0" and rec["previous"]["snapshot"] is True
+    # GC keeps both the current and the N-1 image.
+    keep = driver.named("gc")[-1][2]
+    assert {v1_id, rec["image_id"]} <= keep and driver.removed_images == []
+    await installed(manager, version="1.2.0")
+    assert driver.removed_images == [v1_id]
+    assert manager.view(manager.apps["hello"])["previous_version"] == "1.1.0"
+
+
+async def test_failed_upgrade_keeps_old_version_running(manager, driver):
+    await installed(manager)
+    await manager.start("hello")
+    driver.snapshot_error = "disk full"
+    rec = await installed(manager, version="1.1.0")
+    assert rec["status"] == FAILED and "disk full" in rec["error"]
+    assert rec["installed_version"] == "1.0.0" and rec["upgrade"] is None
+    assert driver.containers["hello"]["running"] is True
+    assert driver.started()[-1].version == "1.0.0"
+
+
+async def test_interrupted_upgrade_resumes(manager, cfg, driver, catalog, verifier, clock):
+    await installed(manager)
+    rec = manager.apps["hello"]
+    v2 = image_for("hello", "1.1.0")
+    # Simulate a supervisor restart after the attestation check, before the pull.
+    rec.update(version="1.1.0", status=INSTALLING,
+               upgrade={"version": "1.1.0", "image": v2, "base": "b", "build": "", "stage": "verified"})
+    manager.save()
+    again = Manager(cfg, driver, catalog, verifier, clock=clock)
+    await again.reconcile_app("hello")  # leaves a mid-upgrade app alone
+    verifier.verified.clear()
+    await again.resume()
+    await settle(again)
+    rec = again.apps["hello"]
+    assert rec["status"] == INSTALLED and rec["image"] == v2 and rec["upgrade"] is None
+    assert verifier.verified == []  # the attestation stage was already done
+    assert rec["previous"]["version"] == "1.0.0"
+
+
+async def test_rollback_restores_snapshot_and_previous_image(manager, driver, catalog):
+    await installed(manager)
+    await manager.start("hello")
+    with pytest.raises(ConflictError):
+        await manager.rollback("hello")
+    await installed(manager, version="1.1.0")
+    view = await manager.rollback("hello")
+    v1 = image_for("hello", "1.0.0")
+    assert ("restore", "hello", v1) in driver.calls
+    assert view["installed_version"] == "1.0.0" and view["rollback_available"] is False
+    assert driver.started()[-1].image == v1
+    with pytest.raises(ConflictError):
+        await manager.rollback("hello")  # the snapshot is spent
+    # Catalog polls leave a rolled-back app alone; the next hub PUT upgrades it again.
+    assert view["pinned"] is True
+    catalog.builds["hello"] = "rebuilt"
+    assert (await manager.poll_catalog())["upgraded"] == []
+    assert (await installed(manager, version="1.1.0"))["installed_version"] == "1.1.0"
+
+
+async def test_offline_catalog_keeps_installed_app(manager, driver, catalog):
+    await installed(manager)
+    await manager.start("hello")
+    catalog.error = CatalogError("cannot fetch the catalog: offline")
+    rec = await installed(manager, token="cd" * 32)
+    assert rec["status"] == INSTALLED and rec["error"] == ""
+    assert driver.started()[-1].token == "cd" * 32
 
 
 async def test_token_change_restarts_running_app(manager, driver):
@@ -234,17 +336,18 @@ async def test_delete(manager, driver):
     await manager.delete("hello", purge_data=True)
     assert "hello" not in manager.apps
     assert ("remove", "hello", True) in driver.calls
+    assert driver.named("gc")[-1] == ("gc", "hello", frozenset())
     with pytest.raises(NotFoundError):
         await manager.delete("hello")
 
 
-async def test_refresh_runtime_restarts_apps_on_old_image(manager, driver):
+async def test_catalog_poll_upgrades_rebuilt_apps(manager, driver, catalog):
     await installed(manager)
     await manager.start("hello")
-    driver.image_id = "sha256:runtime2"
-    out = await manager.refresh_runtime()
-    assert out == {"runtime_image": "sha256:runtime2", "restarted": ["hello"]}
-    assert driver.containers["hello"]["image"] == "sha256:runtime2"
+    assert await manager.poll_catalog() == {"upgraded": []}
+    catalog.builds["hello"] = "base-bump"
+    assert await manager.poll_catalog() == {"upgraded": ["hello"]}
+    assert driver.started()[-1].image == image_for("hello", "1.0.0", "base-bump")
 
 
 async def test_prepare_failure_is_kept(manager, driver):

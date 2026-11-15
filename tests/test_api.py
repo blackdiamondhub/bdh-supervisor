@@ -7,8 +7,8 @@ from .conftest import SUP_TOKEN, TOKEN
 
 
 @pytest.fixture
-def client(cfg, driver, catalog):
-    app = create_app(cfg, driver, catalog, run_background=False)
+def client(cfg, driver, catalog, verifier):
+    app = create_app(cfg, driver, catalog, verifier, run_background=False)
     with TestClient(app, headers={"Authorization": f"Bearer {SUP_TOKEN}"}) as c:
         c.manager = app.state.manager
         yield c
@@ -23,7 +23,8 @@ def body(**kw):
 def test_auth_required(client):
     for headers in ({"Authorization": ""}, {"Authorization": "Bearer wrong"}, {"Authorization": SUP_TOKEN}):
         assert client.get("/healthz", headers=headers).status_code == 401
-    assert client.get("/healthz").status_code == 200
+    health = client.get("/healthz")
+    assert health.status_code == 200 and health.json()["attestation"] == "required"
 
 
 def test_docs_are_disabled(client):
@@ -91,3 +92,22 @@ def test_driver_errors_are_502(client, driver):
     driver.start_error = "docker said no"
     r = client.post("/apps/hello/start")
     assert r.status_code == 502 and "docker said no" in r.json()["detail"]
+
+
+def wait_status(client, status):
+    for _ in range(100):
+        if client.get("/apps/hello").json()["status"] == status:
+            break
+    assert client.get("/apps/hello").json()["status"] == status
+
+
+def test_rollback_and_catalog_refresh(client, driver, catalog):
+    client.put("/apps/hello", json=body())
+    wait_status(client, "installed")
+    assert client.post("/apps/hello/rollback").status_code == 409
+    client.put("/apps/hello", json=body(version="1.1.0"))
+    wait_status(client, "installed")
+    r = client.post("/apps/hello/rollback")
+    assert r.status_code == 200 and r.json()["installed_version"] == "1.0.0"
+    assert client.post("/catalog/refresh").json() == {"upgraded": []}
+    assert client.post("/runtime/refresh").status_code == 404

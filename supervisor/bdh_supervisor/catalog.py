@@ -1,31 +1,35 @@
-"""The app catalog: where an app version's wheel comes from.
+"""The app catalog: which image is an app version.
 
-The hub only names an app and version; the supervisor looks the wheel up in
+The hub only names an app and version; the supervisor looks the image up in
 the catalog itself (``BDH_CATALOG_URL``, normally
 ``https://raw.githubusercontent.com/blackdiamondlodge/bdh-app-catalog/main/catalog.json``),
-so nothing the hub sends ends up in a download URL. Format (schema 1, see
+so nothing the hub sends ends up in an image reference. Format (schema 1, see
 blackdiamondlodge/bdh-app-catalog)::
 
     {"schema": 1,
      "apps": {"hello": {"repo": "blackdiamondlodge/bdh-app-hello",
-                        "versions": [{"version": "1.0.0", "hub_api": 2,
-                                      "wheel_url": "https://github.com/blackdiamondlodge/bdh-app-hello/releases/download/v1.0.0/bdh_app_hello-1.0.0-py3-none-any.whl",
-                                      "sha256": "<hex>", "requires": [], ...}]}}}
+                        "versions": [{"version": "1.0.0", "hub_api": 2, "kind": "image",
+                                      "image": "ghcr.io/blackdiamondlodge/bdh-app-hello@sha256:<hex>",
+                                      "base": "ghcr.io/blackdiamondlodge/bdh-app-runtime@sha256:<hex>",
+                                      "build": "<builder run>", ...}]}}}
 
-Only the app's own wheel is installed (``--no-deps``). Its other
-requirements (``requires``) must already be in the runtime image; the install
-worker's ``verify`` step checks that and fails the install otherwise.
+Images come only from ``<image_prefix>bdh-app-<id>`` (``ghcr.io/blackdiamondlodge/``)
+and are always pinned by digest; ``base`` must be a digest of
+``<image_prefix>bdh-app-runtime``. Wheel entries (``kind: wheel``, hub API 1)
+are not runnable here.
 """
 import json
+import re
 import time
 import urllib.parse
 import urllib.request
 
-from .models import SHA256_RE, Wheel
+from .models import DIGEST_RE, ImageRef
 
 MAX_CATALOG_BYTES = 4 * 1024 * 1024
 CACHE_SECONDS = 60
 SCHEMA = 1
+BUILD_RE = re.compile(r"^[0-9A-Za-z._:+-]{0,128}$")
 
 
 class CatalogError(Exception):
@@ -41,23 +45,39 @@ def _check_url(url, allow_http):
     return url
 
 
-def _wheel(url, sha256, repo, version, allow_http):
-    if not isinstance(sha256, str) or not SHA256_RE.match(sha256):
-        raise CatalogError("catalog entry has a bad sha256")
-    if not isinstance(url, str) or not urllib.parse.urlsplit(url).path.endswith(".whl"):
-        raise CatalogError("catalog entries must be wheels")
-    _check_url(url, allow_http)
-    # Same rule as the catalog's validator: wheels come only from the app's
-    # own GitHub release. http:// test catalogs (allow_http) are exempt.
-    if not allow_http:
-        prefix = f"https://github.com/{repo}/releases/download/v{version}/"
-        if not isinstance(repo, str) or not url.startswith(prefix):
-            raise CatalogError(f"wheel_url must be under {prefix}")
-    return Wheel(url, sha256)
+def app_repo(prefix, app_id):
+    return f"{prefix}bdh-app-{app_id}"
 
 
-def find_version(catalog, app_id, version, hub_api, allow_http=False):
-    """The wheels for ``app_id`` ``version`` (just the app's own wheel)."""
+def base_repo(prefix):
+    return f"{prefix}bdh-app-runtime"
+
+
+def _pinned(ref, repo, what):
+    if not isinstance(ref, str) or "@" not in ref:
+        raise CatalogError(f"{what} must be pinned by digest: {ref!r}")
+    name, digest = ref.rsplit("@", 1)
+    if name != repo or not DIGEST_RE.match(digest):
+        raise CatalogError(f"{what} must be {repo}@sha256:<digest>, not {ref!r}")
+    return ref
+
+
+def image_ref(entry, app_id, prefix):
+    if entry.get("kind") != "image":
+        raise CatalogError(f"{app_id} {entry.get('version')} is not an image (kind {entry.get('kind')!r})")
+    build = entry.get("build", "")
+    if not isinstance(build, str) or not BUILD_RE.match(build):
+        raise CatalogError("catalog entry has a bad build")
+    return ImageRef(
+        version=entry["version"],
+        image=_pinned(entry.get("image"), app_repo(prefix, app_id), "image"),
+        base=_pinned(entry.get("base"), base_repo(prefix), "base"),
+        build=build,
+    )
+
+
+def find_version(catalog, app_id, version, hub_api, prefix):
+    """The :class:`ImageRef` of ``app_id`` ``version``."""
     if not isinstance(catalog, dict) or catalog.get("schema") != SCHEMA:
         raise CatalogError(f"unknown catalog schema {catalog.get('schema') if isinstance(catalog, dict) else None!r}")
     apps = catalog.get("apps")
@@ -71,13 +91,15 @@ def find_version(catalog, app_id, version, hub_api, allow_http=False):
             raise CatalogError(f"{app_id} {version} was yanked: {entry['yanked']}")
         if entry.get("hub_api") != hub_api:
             raise CatalogError(f"{app_id} {version} targets hub API {entry.get('hub_api')}, "
-                               f"this runtime is {hub_api}")
-        return [_wheel(entry.get("wheel_url"), entry.get("sha256"), app.get("repo"), version, allow_http)]
+                               f"this supervisor runs {hub_api}")
+        return image_ref(entry, app_id, prefix)
     raise CatalogError(f"{app_id} {version} is not in the catalog")
 
+
 class Catalog:
-    def __init__(self, url, allow_http=False, opener=None):
+    def __init__(self, url, prefix="ghcr.io/blackdiamondlodge/", allow_http=False, opener=None):
         self.url = url
+        self.prefix = prefix
         self.allow_http = allow_http
         self.opener = opener or urllib.request.urlopen
         self._cached = None
@@ -103,5 +125,5 @@ class Catalog:
         self._cached, self._fetched = data, time.monotonic()
         return data
 
-    def wheels(self, app_id, version, hub_api):
-        return find_version(self.load(force=True), app_id, version, hub_api, self.allow_http)
+    def image(self, app_id, version, hub_api, force=True):
+        return find_version(self.load(force=force), app_id, version, hub_api, self.prefix)
