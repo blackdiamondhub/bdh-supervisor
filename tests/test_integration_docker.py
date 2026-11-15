@@ -160,6 +160,94 @@ except Exception as e:
 """
 
 
+# --- What a malicious app's code would try from inside its container --------
+
+ESCAPE_PROBE = """
+import json, os, stat
+socks = []
+for root, dirs, files in os.walk("/"):
+    if root == "/" :
+        dirs[:] = [d for d in dirs if d not in ("proc", "sys", "dev")]
+    for name in files:
+        path = os.path.join(root, name)
+        try:
+            if stat.S_ISSOCK(os.lstat(path).st_mode):
+                socks.append(path)
+        except OSError:
+            pass
+status = dict(l.split(":", 1) for l in open("/proc/self/status").read().splitlines() if ":" in l)
+writes = {}
+for d in ("/", "/etc", "/usr/local/lib", "/opt/bdh", os.path.dirname(os.__file__), "/var/tmp", "/data", "/tmp"):
+    try:
+        with open(os.path.join(d, ".evil"), "w") as f:
+            f.write("x")
+        os.unlink(os.path.join(d, ".evil"))
+        writes[d] = "ok"
+    except OSError as e:
+        writes[d] = e.strerror
+print(json.dumps({
+    "sockets": socks,
+    "docker_env": {k: v for k, v in os.environ.items() if k.startswith("DOCKER")},
+    "uid": os.getuid(), "cap_eff": status["CapEff"].strip(), "cap_prm": status["CapPrm"].strip(),
+    "no_new_privs": status["NoNewPrivs"].strip(), "writes": writes,
+}))
+"""
+
+TMP_EXEC = """
+import os, subprocess
+exe = "/tmp/evil.sh"
+with open(exe, "w") as f:
+    f.write("#!/bin/sh\\necho pwned\\n")
+os.chmod(exe, 0o755)
+try:
+    print(subprocess.run([exe], capture_output=True, text=True, timeout=5).stdout.strip() or "ran")
+except OSError as e:
+    print("BLOCKED", e.strerror)
+"""
+
+FORK_BOMB = """
+import json, os, signal, time
+cg = "/sys/fs/cgroup/"
+def read(name):
+    try:
+        return open(cg + name).read().strip()
+    except OSError:
+        return None
+leader = os.fork()
+if leader == 0:
+    os.setsid()
+    try:
+        open("/proc/self/oom_score_adj", "w").write("1000")
+    except OSError:
+        pass
+    deadline = time.monotonic() + 30
+    while time.monotonic() < deadline:
+        try:
+            os.fork()  # parent and child both keep forking
+        except OSError:
+            time.sleep(0.05)
+    os._exit(0)
+peak = 0
+for _ in range(50):
+    time.sleep(0.1)
+    peak = max(peak, int(read("pids.current") or 0))
+events = read("pids.events")
+os.killpg(leader, signal.SIGKILL)
+os.waitpid(leader, 0)
+print(json.dumps({"peak": peak, "max": read("pids.max"), "events": events}))
+"""
+
+MEMORY_HOG = """
+import sys
+open("/proc/self/oom_score_adj", "w").write("1000")
+hog = []
+for mb in range(1, 1025):
+    hog.append(bytearray(1 << 20))  # zero-filled, so really resident
+    print(mb, flush=True)
+print("SURVIVED")
+"""
+
+
 def _get(url, path, signed=True):
     from bdh_sdk.identity import signed_headers
 
@@ -325,6 +413,91 @@ async def test_outbound_app_uses_the_egress_proxy(env):
         assert out.startswith("BLOCKED"), out
     finally:
         driver.stop(APP)
+
+
+def _send(url, path, headers):
+    req = urllib.request.Request(url + path, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status
+    except urllib.error.HTTPError as exc:
+        return exc.code
+
+
+async def test_a_malicious_app_stays_in_its_box(env):
+    """What an evil app's code can do inside its (network=none) container, and
+    what someone who reaches the app port without the hub can do to it."""
+    from bdh_sdk.identity import HEADER_IDENTITY, encode_identity, signed_headers
+
+    cfg, driver, client, T, manager = env["cfg"], env["driver"], env["client"], env["T"], env["manager"]
+    upstream = (await manager.start(APP, wait=True))["upstream"]
+    app = client.containers.get(T.container_name(APP))
+    try:
+        # No Docker or supervisor socket (or any other socket file), no capabilities.
+        code, out = _exec_py(app, ESCAPE_PROBE)
+        assert code == 0, out
+        probe = json.loads(out.splitlines()[-1])
+        assert probe["sockets"] == [], probe["sockets"]
+        assert probe["docker_env"] == {}
+        assert probe["uid"] == 10001
+        assert int(probe["cap_eff"], 16) == 0 and int(probe["cap_prm"], 16) == 0, probe
+        assert probe["no_new_privs"] == "1"
+        # The root filesystem is read-only; only /data and the /tmp tmpfs take writes.
+        writes = probe["writes"]
+        assert writes.pop("/data") == "ok" and writes.pop("/tmp") == "ok", writes
+        assert all(v != "ok" for v in writes.values()), f"wrote outside /data and /tmp: {writes}"
+        # ...and /tmp is noexec.
+        _, out = _exec_py(app, TMP_EXEC)
+        assert out.startswith("BLOCKED"), f"ran a binary from /tmp: {out}"
+        # Nor the Docker API over TCP.
+        for host_, port in ((BROKER_HOST, 2375), (BROKER_HOST, 2376), (T.gateway_ip(cfg, SLOT, "none"), 2375)):
+            _, out = _exec_py(app, CONNECT.format(host=host_, port=port))
+            assert out.startswith("BLOCKED"), f"{host_}:{port} reachable: {out}"
+
+        # Fork bomb: the pids limit holds and the app (and host) carry on.
+        code, out = _exec_py(app, FORK_BOMB)
+        bomb = json.loads(out.splitlines()[-1])
+        print(f"\nfork bomb: {bomb}")
+        assert bomb["max"] == str(cfg.pids_limit), bomb
+        assert 0 < bomb["peak"] <= cfg.pids_limit, bomb
+        assert bomb["events"] and int(bomb["events"].split()[-1]) > 0, f"the bomb never hit the limit: {bomb}"
+        for _ in range(60):
+            if driver.stats(APP)["pids"] < cfg.pids_limit // 2:
+                break
+            time.sleep(0.5)
+        app.reload()
+        assert app.status == "running"
+        assert _get(upstream, f"/{APP}/")[0] == 200
+
+        # Memory hog: OOM-killed at the container's limit, not the host's.
+        code, out = _exec_py(app, MEMORY_HOG)
+        lines = out.splitlines()
+        assert "SURVIVED" not in lines and code == 137, (code, lines[-3:])
+        reached = int(lines[-1]) if lines and lines[-1].isdigit() else 0
+        print(f"memory hog killed at ~{reached}MB")
+        assert reached <= 96, f"allocated {reached}MB past the 96MB limit"
+        app.reload()
+        assert app.status == "running", "the hog took the app's server down with it"
+        assert _get(upstream, f"/{APP}/")[0] == 200
+
+        # Straight to the app port, past the hub: forged identity is refused.
+        path = f"/{APP}/"
+        good = signed_headers(TOKEN, "GET", path, identity={"u": "alice"})
+        assert _send(upstream, path, good) == 200
+        forged = [
+            {},
+            {HEADER_IDENTITY: encode_identity({"u": "admin", "staff": True})},
+            signed_headers("ff" * 32, "GET", path, identity={"u": "admin", "staff": True}),
+            signed_headers(TOKEN, "GET", path, identity={"u": "alice"}, now=time.time() - 3600),
+            {**good, HEADER_IDENTITY: encode_identity({"u": "admin", "staff": True})},
+            {**good, "X-BDH-Signature": good["X-BDH-Signature"][:-1] + "0"},
+            {**good, "X-BDH-Time": str(int(good["X-BDH-Time"]) + 1)},
+        ]
+        for headers in forged:
+            assert _send(upstream, path, headers) == 403, headers
+        assert _send(upstream, f"/{APP}/api/visits", good) == 403, "a signature for one path opened another"
+    finally:
+        await manager.stop(APP)
 
 
 async def test_rebuild_upgrade_rollback_and_gc(env):
