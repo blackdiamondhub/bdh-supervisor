@@ -46,6 +46,10 @@ class Manager:
         self.clock = clock
         self.path = Path(cfg.state_dir) / "apps.json"
         self.apps = self._load()
+        # Activity isn't persisted, so give each app a full idle window after a
+        # restart instead of stopping every on-demand app on the first pass.
+        for rec in self.apps.values():
+            rec["last_activity"] = clock()
         self.locks = {}
         self.tasks = set()
         self.prepared = False
