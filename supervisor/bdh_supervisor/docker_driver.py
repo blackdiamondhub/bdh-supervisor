@@ -15,7 +15,7 @@ from docker.types import IPAMConfig, IPAMPool, Mount
 
 from . import templates as T
 from .driver import ContainerState, DriverError, RuntimeDriver
-from .models import NETWORK_LAN
+from .models import COMPANIONS, NETWORK_LAN
 
 log = logging.getLogger("bdh.supervisor.docker")
 
@@ -331,10 +331,18 @@ class DockerDriver(RuntimeDriver):
         except NotFound:
             return ContainerState()
         st = attrs.get("State") or {}
+        companions = {}
+        for name in COMPANIONS:
+            try:
+                c = self.api.inspect_container(T.container_name(app_id, name))
+            except NotFound:
+                continue
+            companions[name] = bool((c.get("State") or {}).get("Running"))
         return ContainerState(
             exists=True, running=bool(st.get("Running")), exit_code=st.get("ExitCode"),
             oom_killed=bool(st.get("OOMKilled")), started_at=st.get("StartedAt") or "",
             image_id=attrs.get("Image") or "", status=st.get("Status") or "",
+            companions=companions,
         )
 
     def logs(self, app_id, lines):

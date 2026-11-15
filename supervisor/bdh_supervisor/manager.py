@@ -411,7 +411,15 @@ class Manager:
             plan = self.plan(rec)
             if rec["desired"] != RUNNING:
                 return
-            if state.running:
+            down = [n for n in plan.companions if not state.companions.get(n)]
+            if state.running and down and not rec.get("next_start"):
+                # A dead companion (e.g. go2rtc OOM) leaves the app up but
+                # useless; restart the set with the usual backoff.
+                rec["last_exit"] = {"code": None, "oom_killed": False, "companions": down, "at": now}
+                self._record_failure(rec, f"{app_id} companion {', '.join(down)} is not running")
+                self.save()
+                return
+            if state.running and not down:
                 if rec.get("failures") and now - rec.get("last_start", 0) > self.cfg.stable_after:
                     rec["failures"], rec["error"] = 0, ""
                     self.save()
