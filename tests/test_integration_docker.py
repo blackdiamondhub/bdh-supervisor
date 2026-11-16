@@ -493,7 +493,7 @@ async def test_a_malicious_app_stays_in_its_box(env):
             signed_headers("ff" * 32, "GET", path, identity={"u": "admin", "staff": True}),
             signed_headers(TOKEN, "GET", path, identity={"u": "alice"}, now=time.time() - 3600),
             {**good, HEADER_IDENTITY: encode_identity({"u": "admin", "staff": True})},
-            {**good, "X-BDH-Signature": good["X-BDH-Signature"][:-1] + "0"},
+            {**good, "X-BDH-Signature-V2": good["X-BDH-Signature-V2"][:-1] + "0"},
             {**good, "X-BDH-Time": str(int(good["X-BDH-Time"]) + 1)},
         ]
         for headers in forged:
