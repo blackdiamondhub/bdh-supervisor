@@ -264,6 +264,10 @@ class DockerDriver(RuntimeDriver):
             if not self.firewall_ok:
                 raise DriverError("the host firewall is not in place; refusing to start app containers")
         self._ensure_image(plan.image)
+        companions = [T.companion_container(self.cfg, plan, name) for name in plan.companions]
+        for spec in companions:
+            # Pull before tearing anything down so a missing image can't leave the app stopped.
+            self._ensure_image(spec["image"])
         self._ensure_volume(T.data_volume(plan.app_id), plan.app_id, "data")
         self._remove_app_containers(plan.app_id)
         net_spec = T.network_spec(self.cfg, plan)
@@ -274,8 +278,8 @@ class DockerDriver(RuntimeDriver):
             self._connect_gateway(net, gw_ip)
         else:
             self._remove_network(plan.app_id)
-        for name in plan.companions:
-            self._create(T.companion_container(self.cfg, plan, name), start=True)
+        for spec in companions:
+            self._create(spec, start=True)
         self._create(T.app_container(self.cfg, plan), start=True)
 
     def _ensure_gateway_running(self):
