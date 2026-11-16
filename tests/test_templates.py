@@ -138,6 +138,13 @@ def test_go2rtc_lan_serves_browsers(cfg):
     assert T.app_env(cfg, p)["BDH_GO2RTC_URL"] == "http://127.0.0.1:11907"
 
 
+def test_go2rtc_gc_soft_limit_below_cgroup_limit(cfg):
+    spec, _ = _go2rtc_args(cfg, plan("lan", companions=("go2rtc",)))
+    soft = int(spec["environment"]["GOMEMLIMIT"].removesuffix("MiB"))
+    hard = int(spec["host_config"]["mem_limit"].removesuffix("m"))
+    assert 0 < soft < hard
+
+
 def test_go2rtc_lan_candidates_and_port(cfg):
     import dataclasses
 

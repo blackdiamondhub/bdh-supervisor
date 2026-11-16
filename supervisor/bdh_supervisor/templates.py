@@ -233,7 +233,10 @@ def companion_container(cfg, plan, name):
         "entrypoint": ["go2rtc"],
         "command": ["-config", json.dumps(go2rtc_config(cfg, plan), separators=(",", ":"))],
         "user": UID,
-        "environment": {},
+        # Without a soft limit Go lets the heap grow to ~2x live data before
+        # collecting, so WebRTC consumer churn got go2rtc OOM-killed at the
+        # cgroup limit. GOMEMLIMIT makes the GC work harder well below it.
+        "environment": {"GOMEMLIMIT": f"{COMPANION_MEMORY_MB * 3 // 4}MiB"},
         "labels": labels(plan.app_id, name),
         "host_config": _hardened(COMPANION_MEMORY_MB, 64, 16,
                                  "host" if lan else app_network(plan.app_id), 0.5),
