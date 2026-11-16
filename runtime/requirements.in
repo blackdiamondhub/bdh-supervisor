@@ -1,6 +1,6 @@
 # The runtime's Python packages. requirements.txt is generated from this with
 # hashes (scripts/lock.sh) and installed with --require-hashes.
-bdh-sdk[runtime] @ https://github.com/blackdiamondlodge/bdh-sdk/releases/download/v0.28.1/bdh_sdk-0.28.1-py3-none-any.whl
+bdh-sdk[runtime] @ https://github.com/blackdiamondlodge/bdh-sdk/releases/download/v0.29.0/bdh_sdk-0.29.0-py3-none-any.whl
 Django~=5.2.0
 uvicorn>=0.30
 whitenoise>=6.6

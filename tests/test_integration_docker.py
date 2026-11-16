@@ -13,6 +13,7 @@ throwaway host or CI runner.
 import asyncio
 import json
 import os
+import re
 import socket
 import threading
 import time
@@ -404,7 +405,9 @@ async def test_outbound_app_uses_the_egress_proxy(env):
             raise AssertionError(driver.logs(APP, 100))
         app = client.containers.get(T.container_name(APP))
         _, out = _exec_py(app, FETCH.format(url="https://api.github.com/zen"))
-        assert out.startswith("HTTP 200"), out
+        # Any status from GitHub proves the TLS tunnel got out (it rate-limits shared
+        # CI IPs with 403); a refused CONNECT is a URLError with no status code.
+        assert re.match(r"(HTTP|ERROR) \d{3}\b", out), out
         for url in (f"http://{BROKER_HOST}:{PROBE_PORT}/", f"http://{T.host_ip(cfg, SLOT, 1)}:{PROBE_PORT}/",
                     "http://169.254.169.254/latest/meta-data/", "https://1.1.1.1:8443/"):
             _, out = _exec_py(app, FETCH.format(url=url))
