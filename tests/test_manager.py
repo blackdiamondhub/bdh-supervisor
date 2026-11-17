@@ -378,6 +378,23 @@ async def test_catalog_poll_upgrades_rebuilt_apps(manager, driver, catalog):
     assert driver.started()[-1].image == image_for("hello", "1.0.0", "base-bump")
 
 
+async def test_first_tick_after_restart_polls_catalog(manager, cfg, driver, catalog, verifier, clock):
+    """A restart (e.g. Watchtower) must not push the next rebuild check a full interval out."""
+    await installed(manager)
+    catalog.builds["hello"] = "base-bump"
+    restarted = Manager(cfg, driver, catalog, verifier, clock=clock)
+    await restarted.tick(1000.0)
+    await settle(restarted)
+    assert restarted.apps["hello"]["image"] == image_for("hello", "1.0.0", "base-bump")
+    catalog.builds["hello"] = "again"
+    await restarted.tick(1000.0 + cfg.catalog_poll_interval / 2)
+    await settle(restarted)
+    assert restarted.apps["hello"]["image"] == image_for("hello", "1.0.0", "base-bump")
+    await restarted.tick(1001.0 + cfg.catalog_poll_interval)
+    await settle(restarted)
+    assert restarted.apps["hello"]["image"] == image_for("hello", "1.0.0", "again")
+
+
 async def test_prepare_failure_is_kept(manager, driver):
     def boom():
         raise DriverError("firewall missing")

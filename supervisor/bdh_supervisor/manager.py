@@ -57,6 +57,8 @@ class Manager:
         self.prepare_error = ""
         self.resumed = False
         self.last_poll = None
+        self._last_prepare = 0.0
+        self._polled_at = None
 
     # -- persistence -----------------------------------------------------
 
@@ -467,23 +469,26 @@ class Manager:
         self.last_poll = self.clock()
         return {"upgraded": synced}
 
+    async def tick(self, now):
+        """One reconcile pass; ``now`` is a monotonic timestamp."""
+        if not self.prepared or now - self._last_prepare > self.cfg.firewall_interval:
+            if await self.prepare():
+                self._last_prepare = now
+        if self.prepared and not self.resumed:
+            await self.resume()
+        # Poll on the first prepared pass, not one interval later: Watchtower restarts
+        # us on every supervisor release, which would otherwise postpone it indefinitely.
+        if self.prepared and (self._polled_at is None
+                              or now - self._polled_at > self.cfg.catalog_poll_interval):
+            self._polled_at = now
+            await self.poll_catalog()
+        for app_id in list(self.apps):
+            await self.reconcile_app(app_id)
+
     async def run_forever(self):
-        last_prepare = last_poll = 0.0
         while True:
-            now = time.monotonic()
             try:
-                if not self.prepared or now - last_prepare > self.cfg.firewall_interval:
-                    if await self.prepare():
-                        last_prepare = now
-                        if not last_poll:
-                            last_poll = now
-                if self.prepared and not self.resumed:
-                    await self.resume()
-                if self.prepared and now - last_poll > self.cfg.catalog_poll_interval:
-                    last_poll = now
-                    await self.poll_catalog()
-                for app_id in list(self.apps):
-                    await self.reconcile_app(app_id)
+                await self.tick(time.monotonic())
             except Exception:  # noqa: BLE001 - the loop must survive anything
                 log.exception("reconcile failed")
             await asyncio.sleep(self.cfg.reconcile_interval)
