@@ -57,3 +57,31 @@ jobs:
           name: rss
           path: dist/rss.json
           if-no-files-found: ignore
+  candidate-images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the candidate images
+        run: |
+          for img in runtime:bdh-app-runtime supervisor:bdh-supervisor; do
+            docker build -q -f "${img%%:*}/Dockerfile" -t "${img#*:}:candidate" \
+              --label "org.opencontainers.image.revision=${{ github.event.pull_request.head.sha || github.sha }}" .
+          done
+          mkdir -p "$RUNNER_TEMP/images"
+          docker save -o "$RUNNER_TEMP/images/candidates.tar" bdh-app-runtime:candidate bdh-supervisor:candidate
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-images
+          path: ${{ runner.temp }}/images
+          retention-days: 1
+          compression-level: 0
+
+  stack-e2e:
+    # These images with the hub, SDK and fixture apps pinned by the hub's
+    # stack.lock.json, end to end (BlackDiamondHub tests/e2e).
+    needs: candidate-images
+    uses: blackdiamondlodge/BlackDiamondHub/.github/workflows/stack-e2e.yml@5ec2a490d90b722d83b498ccaf9cc776ba1f973f
+    with:
+      supervisor_image: bdh-supervisor:candidate
+      runtime_image: bdh-app-runtime:candidate
+      images_artifact: candidate-images
