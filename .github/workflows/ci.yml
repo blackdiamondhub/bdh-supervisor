@@ -80,7 +80,7 @@ jobs:
     # These images with the hub, SDK and fixture apps pinned by the hub's
     # stack.lock.json, end to end (BlackDiamondHub tests/e2e).
     needs: candidate-images
-    uses: blackdiamondlodge/BlackDiamondHub/.github/workflows/stack-e2e.yml@aa988d7a89c323967b4c701941c6be1327a0f376
+    uses: blackdiamondlodge/BlackDiamondHub/.github/workflows/stack-e2e.yml@5ec2a490d90b722d83b498ccaf9cc776ba1f973f
     with:
       supervisor_image: bdh-supervisor:candidate
       runtime_image: bdh-app-runtime:candidate
