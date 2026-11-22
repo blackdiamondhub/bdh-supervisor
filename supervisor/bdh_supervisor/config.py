@@ -25,6 +25,7 @@ class Config:
     github_token: str = field(default="", repr=False)
     supervisor_image: str = "ghcr.io/blackdiamondlodge/bdh-supervisor:latest"
     go2rtc_image: str = "ghcr.io/blackdiamondlodge/go2rtc-nack:latest"
+    aec_image: str = "ghcr.io/blackdiamondlodge/bdh-aec:latest"
     hub_api: int = 2
     # Apps get 10.213.<slot>.0/24 each; the egress bridge is 10.213.255.0/24.
     subnet_prefix: str = "10.213"
@@ -37,6 +38,10 @@ class Config:
     # WebRTC of a lan app's go2rtc (host-wide; see templates.go2rtc_config).
     go2rtc_webrtc_port: int = 8555
     go2rtc_candidates: tuple = ()
+    # A lan app's aec companion: HTTP (what browsers and go2rtc use) and its
+    # loopback-only talk websocket.
+    lan_aec_port_base: int = 12200
+    lan_aec_talk_port_base: int = 12500
     firewall: str = "required"  # or "off"
     allow_http: bool = False  # http:// catalog URLs (tests only)
     idle_timeout: int = 600
@@ -68,6 +73,7 @@ class Config:
             github_token=os.environ.get("BDH_GITHUB_TOKEN", ""),
             supervisor_image=os.environ.get("BDH_SUPERVISOR_IMAGE", cls.supervisor_image),
             go2rtc_image=os.environ.get("BDH_GO2RTC_IMAGE", cls.go2rtc_image),
+            aec_image=os.environ.get("BDH_AEC_IMAGE", cls.aec_image),
             hub_api=_int("BDH_HUB_API", cls.hub_api),
             subnet_prefix=os.environ.get("BDH_SUBNET_PREFIX", cls.subnet_prefix),
             broker_host=os.environ.get("BDH_BROKER_HOST", cls.broker_host),
@@ -76,6 +82,8 @@ class Config:
             lan_port_base=_int("BDH_LAN_PORT_BASE", cls.lan_port_base),
             lan_go2rtc_port_base=_int("BDH_LAN_GO2RTC_PORT_BASE", cls.lan_go2rtc_port_base),
             go2rtc_webrtc_port=_int("BDH_GO2RTC_WEBRTC_PORT", cls.go2rtc_webrtc_port),
+            lan_aec_port_base=_int("BDH_LAN_AEC_PORT_BASE", cls.lan_aec_port_base),
+            lan_aec_talk_port_base=_int("BDH_LAN_AEC_TALK_PORT_BASE", cls.lan_aec_talk_port_base),
             go2rtc_candidates=tuple(
                 c.strip() for c in os.environ.get("BDH_GO2RTC_CANDIDATES", "").split(",") if c.strip()
             ),

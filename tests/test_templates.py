@@ -20,6 +20,7 @@ def all_specs(cfg):
         p = plan(net, companions=("go2rtc",))
         specs.append(T.app_container(cfg, p))
         specs.append(T.companion_container(cfg, p, "go2rtc"))
+    specs.append(T.companion_container(cfg, plan("lan", companions=("go2rtc", "aec")), "aec"))
     specs.append(T.data_copy_container("hello", IMAGE, "snapshot"))
     specs.append(T.data_copy_container("hello", IMAGE, "restore"))
     specs.append(T.manifest_probe("hello", IMAGE))
@@ -169,6 +170,36 @@ def test_config_reads_go2rtc_env(monkeypatch):
     cfg = Config.from_env()
     assert cfg.go2rtc_webrtc_port == 8600
     assert cfg.go2rtc_candidates == ("10.0.0.5:8600", "stun:8600")
+
+
+def test_aec_lan_sits_beside_go2rtc(cfg):
+    p = plan("lan", companions=("go2rtc", "aec"))
+    spec = T.companion_container(cfg, p, "aec")
+    assert spec["name"] == "bdh-app-hello-aec"
+    assert spec["image"] == cfg.aec_image
+    assert spec["host_config"]["network_mode"] == "host"
+    assert spec["environment"]["GO2RTC"] == "http://127.0.0.1:11907"
+    http, talk = int(spec["environment"]["HTTP_PORT"]), int(spec["environment"]["TALK_PORT"])
+    env = T.app_env(cfg, p)
+    assert env["BDH_AEC_URL"] == f"http://127.0.0.1:{http}"
+    # Every host port of every slot stays distinct from the app and go2rtc ports.
+    ports = set()
+    for slot in range(254):
+        for base in (cfg.lan_port_base, cfg.lan_go2rtc_port_base, cfg.lan_aec_port_base,
+                     cfg.lan_aec_talk_port_base):
+            ports.add(base + slot)
+    assert len(ports) == 4 * 254
+    assert {http, talk} == {cfg.lan_aec_port_base + 7, cfg.lan_aec_talk_port_base + 7}
+
+
+@pytest.mark.parametrize("network,companions", [("none", ("go2rtc", "aec")), ("lan", ("aec",))])
+def test_aec_needs_lan_and_go2rtc(cfg, network, companions):
+    with pytest.raises(ValueError):
+        T.companion_container(cfg, plan(network, companions=companions), "aec")
+
+
+def test_no_aec_url_without_the_companion(cfg):
+    assert "BDH_AEC_URL" not in T.app_env(cfg, plan("lan", companions=("go2rtc",)))
 
 
 def test_unknown_companion_is_refused(cfg):

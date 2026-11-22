@@ -12,7 +12,7 @@ NETWORK_OUTBOUND = "outbound"
 NETWORK_LAN = "lan"
 NETWORKS = (NETWORK_NONE, NETWORK_OUTBOUND, NETWORK_LAN)  # least to most privileged
 LIFECYCLES = ("always", "on_demand")
-COMPANIONS = ("go2rtc",)
+COMPANIONS = ("go2rtc", "aec")
 MAX_SLOT = 253
 MIN_MEMORY_MB, DEFAULT_MEMORY_MB, MAX_MEMORY_MB = 48, 96, 256
 
