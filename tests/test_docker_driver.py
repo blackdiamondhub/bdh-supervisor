@@ -28,7 +28,7 @@ def _driver(cfg, missing=()):
 
 def _plan():
     return AppPlan(app_id="cameras", version="2.0.0", image=IMAGE, slot=0, network="lan",
-                   memory_mb=96, token="ab" * 32, companions=("go2rtc",))
+                   memory_mb=96, token="ab" * 32, companions=("go2rtc", "aec"))
 
 
 def test_start_pulls_companion_images(cfg):
@@ -36,6 +36,8 @@ def test_start_pulls_companion_images(cfg):
     d.start(_plan())
     assert ("pull", cfg.go2rtc_image) in calls
     assert calls.index(("pull", cfg.go2rtc_image)) < calls.index(("create", cfg.go2rtc_image))
+    assert calls.index(("pull", cfg.aec_image)) < calls.index(("remove", "cameras"))
+    assert calls.index(("create", cfg.aec_image)) < calls.index(("create", IMAGE))
 
 
 def test_missing_companion_image_leaves_running_app_alone(cfg):

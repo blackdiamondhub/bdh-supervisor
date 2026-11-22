@@ -33,7 +33,7 @@ A catalog version entry for an image looks like this:
   "image": "ghcr.io/blackdiamondlodge/bdh-app-cameras@sha256:<64 hex>",
   "base": "ghcr.io/blackdiamondlodge/bdh-app-runtime@sha256:<64 hex>",
   "build": "<builder run id>",
-  "permissions": ["…"], "network": "lan", "lifecycle": "always", "memory_mb": 96, "companions": ["go2rtc"]
+  "permissions": ["…"], "network": "lan", "lifecycle": "always", "memory_mb": 96, "companions": ["go2rtc", "aec"]
 }
 ```
 
@@ -82,6 +82,7 @@ The supervisor only accepts `kind: "image"` entries whose `hub_api` equals its o
   * Apps cannot reach each other, the LAN, the Docker host or the cloud metadata address.
 * **Companions** such as `go2rtc` are started from a platform template on the app's network at `.3`, with the same hardening and a 64 MB limit. The app receives the companion's address as `BDH_GO2RTC_URL`.
   For a `lan` app, go2rtc runs on the host network: its API listens on every interface at `11900+slot` (browsers load `video-stream.js` and its websocket from there), and WebRTC listens on `8555` UDP+TCP. WebRTC over UDP can't go through Docker's port proxy, so this is a host-wide port: only one `lan` app per host can have a go2rtc companion, and the hub's own go2rtc must be removed first. Set `BDH_GO2RTC_CANDIDATES` to the host's LAN `ip:8555` so browsers get a reachable candidate.
+  `aec` ([bdh-aec](https://github.com/blackdiamondlodge/bdh-aec), doorbell echo cancellation) is for `lan` apps that also declare `go2rtc`. It runs on the host network as the same unprivileged user with a 192 MB limit. Its HTTP port, `12200+slot`, serves `/aec.ts` to go2rtc and the `/api/talk` websocket to browsers. It relays talk audio through a loopback-only port at `12500+slot` to go2rtc. The app receives its address as `BDH_AEC_URL`.
 * **Lifecycle**
   * `on_demand` (default): the app is stopped after 10 minutes without activity (`BDH_IDLE_TIMEOUT`).
   * `always`: the app is kept running.
@@ -171,6 +172,7 @@ Apps are identified by catalog id (`[a-z0-9][a-z0-9_-]{0,63}`).
 | `BDH_GITHUB_TOKEN` | — | Optional. Any read-only token; it only raises the GitHub API rate limit (60/hour without one). |
 | `BDH_SUPERVISOR_IMAGE` | `ghcr.io/blackdiamondlodge/bdh-supervisor:latest` | Used for the gateway and firewall helper. |
 | `BDH_GO2RTC_IMAGE` | `ghcr.io/blackdiamondlodge/go2rtc-nack:latest` | |
+| `BDH_AEC_IMAGE` | `ghcr.io/blackdiamondlodge/bdh-aec:latest` | |
 | `BDH_HUB_API` | `2` | |
 | `BDH_BROKER_HOST` / `BDH_BROKER_PORT` / `BDH_BROKER_PATH` | `172.17.0.1` / `8099` / `/_broker` | Where the hub's broker listens (`BROKER_BIND`/`BROKER_PORT`). |
 | `BDH_SUBNET_PREFIX` | `10.213` | A private `/16` reserved for apps. |
@@ -178,6 +180,7 @@ Apps are identified by catalog id (`[a-z0-9][a-z0-9_-]{0,63}`).
 | `BDH_LAN_GO2RTC_PORT_BASE` | `11900` | The API port of a `lan` app's go2rtc is this plus the slot. |
 | `BDH_GO2RTC_WEBRTC_PORT` | `8555` | WebRTC port of a `lan` app's go2rtc (host-wide). |
 | `BDH_GO2RTC_CANDIDATES` | — | Comma-separated WebRTC candidates for a `lan` go2rtc, e.g. `192.168.10.216:8555`. |
+| `BDH_LAN_AEC_PORT_BASE` / `BDH_LAN_AEC_TALK_PORT_BASE` | `12200` / `12500` | The HTTP port and the loopback talk port of a `lan` app's aec are these plus the slot. |
 | `BDH_FIREWALL` | `required` | `off` is for development only. Apps are not started if the firewall could not be applied. |
 | `BDH_EGRESS_PORTS` | `80,443` | |
 | `BDH_IDLE_TIMEOUT` | `600` | Seconds. |
@@ -200,6 +203,7 @@ The supervisor passes only these variables. The image's own `ENV` must equal the
 | `BDH_TIME_ZONE`, `BDH_HUB_BRAND` | From the hub. |
 | `HTTP(S)_PROXY`, `NO_PROXY` | Outbound apps only. |
 | `BDH_GO2RTC_URL` | When a go2rtc companion is declared. |
+| `BDH_AEC_URL` | When an aec companion is declared (`lan` only). |
 
 ## Hub compose
 

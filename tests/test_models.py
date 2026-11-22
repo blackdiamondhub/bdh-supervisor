@@ -32,7 +32,7 @@ def test_clamp_memory(value, expected):
 
 
 def test_companions_are_allowlisted():
-    assert manifest_companions({"companions": ["go2rtc", "docker-in-docker"]}) == ("go2rtc",)
+    assert manifest_companions({"companions": ["go2rtc", "docker-in-docker", "aec"]}) == ("go2rtc", "aec")
 
 
 @pytest.mark.parametrize("value", ["../x", "Hello", "a b", "", "-x", "a" * 65])

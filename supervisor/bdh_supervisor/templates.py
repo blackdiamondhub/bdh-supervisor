@@ -83,6 +83,10 @@ def lan_port(cfg, slot):
     return cfg.lan_port_base + slot
 
 
+def lan_go2rtc_port(cfg, slot):
+    return cfg.lan_go2rtc_port_base + slot
+
+
 def upstream(cfg, plan):
     """Where the hub proxy reaches the app."""
     if plan.network == NETWORK_LAN:
@@ -161,7 +165,9 @@ def app_env(cfg, plan):
         env["BDH_PORT"] = str(lan_port(cfg, plan.slot))
         env["BDH_BROKER_URL"] = f"http://{cfg.broker_host}:{cfg.broker_port}{cfg.broker_path}"
         if "go2rtc" in plan.companions:
-            env["BDH_GO2RTC_URL"] = f"http://127.0.0.1:{cfg.lan_go2rtc_port_base + plan.slot}"
+            env["BDH_GO2RTC_URL"] = f"http://127.0.0.1:{lan_go2rtc_port(cfg, plan.slot)}"
+        if "aec" in plan.companions:
+            env["BDH_AEC_URL"] = f"http://127.0.0.1:{cfg.lan_aec_port_base + plan.slot}"
         return env
     gw = gateway_ip(cfg, plan.slot, plan.network)
     env["BDH_HOST"] = "0.0.0.0"
@@ -216,14 +222,45 @@ def go2rtc_config(cfg, plan):
     if cfg.go2rtc_candidates:
         webrtc["candidates"] = list(cfg.go2rtc_candidates)
     return {
-        "api": {"listen": f":{cfg.lan_go2rtc_port_base + plan.slot}", "origin": "*"},
+        "api": {"listen": f":{lan_go2rtc_port(cfg, plan.slot)}", "origin": "*"},
         "rtsp": {"listen": ""},
         "webrtc": webrtc,
         "log": {"level": "warn"},
     }
 
 
+def aec_container(cfg, plan):
+    """bdh-aec (doorbell echo cancellation) next to a ``lan`` app's go2rtc.
+
+    Host network like go2rtc, which pulls ``/aec.ts`` from it; browsers reach
+    its HTTP port (``lan_aec_port_base + slot``) for the talk websocket, which
+    it relays to its loopback-only talk port and on to go2rtc.
+    """
+    if plan.network != NETWORK_LAN or "go2rtc" not in plan.companions:
+        raise ValueError("the aec companion needs a lan app with go2rtc")
+    return {
+        "name": container_name(plan.app_id, "aec"),
+        "image": cfg.aec_image,
+        "entrypoint": None,
+        "command": None,
+        "user": UID,
+        "environment": {
+            "GO2RTC": f"http://127.0.0.1:{lan_go2rtc_port(cfg, plan.slot)}",
+            "HTTP_PORT": str(cfg.lan_aec_port_base + plan.slot),
+            "TALK_PORT": str(cfg.lan_aec_talk_port_base + plan.slot),
+            "HOME": "/tmp",
+        },
+        "labels": labels(plan.app_id, "aec"),
+        "host_config": _hardened(COMPANION_MEMORY_MB, cfg.pids_limit, 16, "host", 1.0),
+        "mounts": [],
+        "network": None,
+        "ipv4_address": None,
+    }
+
+
 def companion_container(cfg, plan, name):
+    if name == "aec":
+        return aec_container(cfg, plan)
     if name != "go2rtc":
         raise ValueError(f"unknown companion {name!r}")
     lan = plan.network == NETWORK_LAN
