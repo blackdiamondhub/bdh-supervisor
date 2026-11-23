@@ -4,7 +4,7 @@ Runs Black Diamond Hub apps, each in its own hardened container built from its o
 
 | Image | Tags | What it is |
 |---|---|---|
-| `ghcr.io/blackdiamondlodge/bdh-app-runtime` | `hub-api-2`, `sha-<commit>` | The **base** every app image is built `FROM`. It contains only the common runtime: Python 3.13, Django, uvicorn (one worker), whitenoise, requests, websocket-client and the pinned `bdh-sdk`. It also ships `/opt/bdh/constraints.txt` (its exact pins), `/opt/bdh/check.py` and `/opt/bdh/hub_api`, and is labelled `org.blackdiamondlodge.bdh.runtime=1` and `org.blackdiamondlodge.bdh.hub_api=2`. App libraries are **not** in the base. |
+| `ghcr.io/blackdiamondlodge/bdh-app-runtime` | `hub-api-2`, `sha-<commit>` | The **base** every app image is built `FROM`. It contains only the common runtime: Python 3.13, Django, uvicorn (one worker), whitenoise, requests, websocket-client, channels, websockets and the pinned `bdh-sdk`. It also ships `/opt/bdh/constraints.txt` (its exact pins), `/opt/bdh/check.py` and `/opt/bdh/hub_api`, and is labelled `org.blackdiamondlodge.bdh.runtime=1` and `org.blackdiamondlodge.bdh.hub_api=2`. App libraries are **not** in the base. |
 | `ghcr.io/blackdiamondlodge/bdh-supervisor` | `latest`, `sha-<commit>` | The supervisor: a small FastAPI service and the **only** process with the Docker socket. The same image also provides the gateway container and the one-shot firewall helper. |
 
 `publish.yml` pushes both images on every push to `main`, attests them (`actions/attest-build-provenance` with `push-to-registry`), and writes the base digest to the run summary. Both GHCR packages are public, so hubs pull them without credentials.
