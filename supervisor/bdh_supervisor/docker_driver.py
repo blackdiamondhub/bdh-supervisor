@@ -40,7 +40,17 @@ class DockerDriver(RuntimeDriver):
         self._ensure_network(T.egress_network_spec(self.cfg))
         self.firewall_ok = self.apply_firewall()
         self._ensure_gateway()
+        self._refresh_companion_images()
         return {"firewall": self.firewall_ok}
+
+    def _refresh_companion_images(self):
+        """Re-pull the companions' tags; ``state`` then flags containers on an old image."""
+        for name in COMPANIONS:
+            ref = T.companion_image(self.cfg, name)
+            try:
+                self.api.pull(ref)
+            except APIError as exc:
+                log.warning("cannot refresh %s: %s", ref, exc)
 
     def apply_firewall(self):
         if self.cfg.firewall == "off":
@@ -336,17 +346,21 @@ class DockerDriver(RuntimeDriver):
             return ContainerState()
         st = attrs.get("State") or {}
         companions = {}
+        stale = []
         for name in COMPANIONS:
             try:
                 c = self.api.inspect_container(T.container_name(app_id, name))
             except NotFound:
                 continue
             companions[name] = bool((c.get("State") or {}).get("Running"))
+            latest = self._image_id(T.companion_image(self.cfg, name))
+            if latest and c.get("Image") and c["Image"] != latest:
+                stale.append(name)
         return ContainerState(
             exists=True, running=bool(st.get("Running")), exit_code=st.get("ExitCode"),
             oom_killed=bool(st.get("OOMKilled")), started_at=st.get("StartedAt") or "",
             image_id=attrs.get("Image") or "", status=st.get("Status") or "",
-            companions=companions,
+            companions=companions, stale_companions=stale,
         )
 
     def logs(self, app_id, lines):

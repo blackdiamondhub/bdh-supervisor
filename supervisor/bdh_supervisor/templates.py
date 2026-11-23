@@ -240,7 +240,7 @@ def aec_container(cfg, plan):
         raise ValueError("the aec companion needs a lan app with go2rtc")
     return {
         "name": container_name(plan.app_id, "aec"),
-        "image": cfg.aec_image,
+        "image": companion_image(cfg, "aec"),
         "entrypoint": None,
         "command": None,
         "user": UID,
@@ -258,6 +258,10 @@ def aec_container(cfg, plan):
     }
 
 
+def companion_image(cfg, name):
+    return {"go2rtc": cfg.go2rtc_image, "aec": cfg.aec_image}[name]
+
+
 def companion_container(cfg, plan, name):
     if name == "aec":
         return aec_container(cfg, plan)
@@ -266,7 +270,7 @@ def companion_container(cfg, plan, name):
     lan = plan.network == NETWORK_LAN
     return {
         "name": container_name(plan.app_id, name),
-        "image": cfg.go2rtc_image,
+        "image": companion_image(cfg, name),
         "entrypoint": ["go2rtc"],
         "command": ["-config", json.dumps(go2rtc_config(cfg, plan), separators=(",", ":"))],
         "user": UID,

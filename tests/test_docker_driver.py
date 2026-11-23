@@ -45,3 +45,36 @@ def test_missing_companion_image_leaves_running_app_alone(cfg):
     with pytest.raises(DriverError):
         d.start(_plan())
     assert not [c for c in calls if c[0] in ("remove", "create")]
+
+
+def test_state_flags_companions_on_an_old_image(cfg):
+    from docker.errors import NotFound
+
+    d = DockerDriver(cfg, client=mock.MagicMock())
+    containers = {
+        "bdh-app-cameras": {"State": {"Running": True}, "Image": "sha256:app"},
+        "bdh-app-cameras-go2rtc": {"State": {"Running": True}, "Image": "sha256:go2rtc-new"},
+        "bdh-app-cameras-aec": {"State": {"Running": True}, "Image": "sha256:aec-old"},
+    }
+
+    def inspect(name):
+        if name not in containers:
+            raise NotFound(name)
+        return containers[name]
+
+    d.api.inspect_container.side_effect = inspect
+    d._image_id = {cfg.go2rtc_image: "sha256:go2rtc-new", cfg.aec_image: "sha256:aec-new"}.get
+    assert d.state("cameras").stale_companions == ["aec"]
+
+
+def test_prepare_repulls_companion_tags_best_effort(cfg):
+    from docker.errors import APIError
+
+    d = DockerDriver(cfg, client=mock.MagicMock())
+    d._ensure_image = d._ensure_network = lambda *a: None
+    d.apply_firewall = lambda: True
+    d._ensure_gateway = lambda: None
+    d.api.pull.side_effect = lambda ref: (_ for _ in ()).throw(APIError("offline")) \
+        if ref == cfg.go2rtc_image else None
+    assert d.prepare() == {"firewall": True}
+    assert [c.args[0] for c in d.api.pull.call_args_list] == [cfg.go2rtc_image, cfg.aec_image]

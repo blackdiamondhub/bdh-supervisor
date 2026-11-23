@@ -23,12 +23,15 @@ class ContainerState:
     status: str = "missing"
     # Companion name -> running, for the companions that exist.
     companions: dict = field(default_factory=dict)
+    # Companions whose container runs an older image than their tag now points at.
+    stale_companions: list = field(default_factory=list)
 
 
 class RuntimeDriver(ABC):
     @abstractmethod
     def prepare(self):
-        """Pull images and set up shared pieces (egress network, firewall, gateway).
+        """Pull images (re-pulling companion tags) and set up shared pieces
+        (egress network, firewall, gateway).
 
         Returns ``{"firewall": bool, ...}``. Called at startup and periodically.
         """
