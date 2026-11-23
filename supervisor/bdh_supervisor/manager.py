@@ -422,6 +422,16 @@ class Manager:
                 self.save()
                 return
             if state.running and not down:
+                if state.stale_companions:
+                    # prepare() re-pulled a companion tag (e.g. a bdh-aec fix): pick it up.
+                    log.info("%s: newer %s image; restarting", app_id, ", ".join(state.stale_companions))
+                    rec["last_start"] = now
+                    try:
+                        await asyncio.to_thread(self.driver.start, plan)
+                    except (DriverError, OSError) as exc:
+                        self._record_failure(rec, str(exc))
+                    self.save()
+                    return
                 if rec.get("failures") and now - rec.get("last_start", 0) > self.cfg.stable_after:
                     rec["failures"], rec["error"] = 0, ""
                     self.save()

@@ -208,6 +208,34 @@ async def test_dead_companion_restarts_the_app(manager, driver, clock, cfg):
     assert driver.containers["hello"]["companions"] == {"go2rtc": True}
 
 
+async def test_stale_companion_image_restarts_running_app(manager, driver):
+    """A re-pulled companion tag (e.g. a bdh-aec fix) reaches running apps without a manual restart."""
+    driver.manifest_for("hello", companions=["go2rtc"])
+    await installed(manager)
+    await manager.start("hello")
+    starts = len(driver.started())
+    await manager.reconcile_app("hello")
+    assert len(driver.started()) == starts
+    driver.containers["hello"]["stale"] = ["go2rtc"]
+    await manager.reconcile_app("hello")
+    assert len(driver.started()) == starts + 1
+    assert driver.containers["hello"]["stale"] == []
+    assert not manager.apps["hello"].get("failures")
+    await manager.reconcile_app("hello")
+    assert len(driver.started()) == starts + 1
+
+
+async def test_stale_companion_image_leaves_stopped_app_alone(manager, driver):
+    driver.manifest_for("hello", companions=["go2rtc"])
+    await installed(manager)
+    await manager.start("hello")
+    await manager.stop("hello")
+    starts = len(driver.started())
+    driver.containers["hello"]["stale"] = ["go2rtc"]
+    await manager.reconcile_app("hello")
+    assert len(driver.started()) == starts
+
+
 async def test_backoff_is_capped(manager, driver, clock, cfg):
     await installed(manager)
     await manager.start("hello")
