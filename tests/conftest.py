@@ -103,7 +103,8 @@ class FakeDriver(RuntimeDriver):
             raise DriverError(self.start_error)
         self.containers[plan.app_id] = {"running": True, "plan": plan, "exit": None, "oom": False,
                                         "image": self.image_id(plan.image),
-                                        "companions": {n: True for n in plan.companions}, "stale": []}
+                                        "companions": {n: True for n in plan.companions}, "stale": [],
+                                        "outdated": []}
 
     def stop(self, app_id):
         self.calls.append(("stop", app_id))
@@ -118,13 +119,14 @@ class FakeDriver(RuntimeDriver):
     def crash(self, app_id, code=1, oom=False):
         self.containers[app_id].update(running=False, exit=code, oom=oom)
 
-    def state(self, app_id):
+    def state(self, app_id, plan=None):
         c = self.containers.get(app_id)
         if c is None:
             return ContainerState()
         return ContainerState(exists=True, running=c["running"], exit_code=c["exit"], oom_killed=c["oom"],
                               image_id=c["image"], status="running" if c["running"] else "exited",
-                              companions=dict(c["companions"]), stale_companions=list(c["stale"]))
+                              companions=dict(c["companions"]), stale_companions=list(c["stale"]),
+                              outdated=list(c["outdated"]) if plan else [])
 
     def logs(self, app_id, lines):
         return f"{app_id} log line\n" * min(lines, 3)
