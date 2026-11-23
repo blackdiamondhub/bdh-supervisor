@@ -129,11 +129,12 @@ def _go2rtc_args(cfg, p):
     return spec, json.loads(spec["command"][1])
 
 
-def test_go2rtc_lan_serves_browsers(cfg):
+def test_go2rtc_lan_api_is_loopback_only(cfg):
+    """Browsers reach go2rtc through the app, which checks who may watch."""
     p = plan("lan", companions=("go2rtc",))
     spec, conf = _go2rtc_args(cfg, p)
     assert spec["host_config"]["network_mode"] == "host"
-    assert conf["api"] == {"listen": ":11907", "origin": "*"}
+    assert conf["api"] == {"listen": "127.0.0.1:11907"}
     assert conf["webrtc"] == {"listen": ":8555"}
     assert conf["rtsp"] == {"listen": ""}
     assert T.app_env(cfg, p)["BDH_GO2RTC_URL"] == "http://127.0.0.1:11907"
@@ -179,6 +180,8 @@ def test_aec_lan_sits_beside_go2rtc(cfg):
     assert spec["image"] == cfg.aec_image
     assert spec["host_config"]["network_mode"] == "host"
     assert spec["environment"]["GO2RTC"] == "http://127.0.0.1:11907"
+    # Loopback only: the app relays the kiosk's talk websocket after checking it.
+    assert spec["environment"]["HTTP_HOST"] == "127.0.0.1"
     http, talk = int(spec["environment"]["HTTP_PORT"]), int(spec["environment"]["TALK_PORT"])
     env = T.app_env(cfg, p)
     assert env["BDH_AEC_URL"] == f"http://127.0.0.1:{http}"

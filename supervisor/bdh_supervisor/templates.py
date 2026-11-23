@@ -207,13 +207,15 @@ def app_container(cfg, plan):
 
 
 def go2rtc_config(cfg, plan):
-    """go2rtc's config; ``lan`` apps get one browsers can reach.
+    """go2rtc's config; ``lan`` apps get WebRTC browsers can reach.
 
-    A ``lan`` go2rtc runs on the host network: its API (``lan_go2rtc_port_base
-    + slot``) listens on every interface so browsers on the LAN can load
-    ``video-stream.js`` and its websocket, and WebRTC listens on
-    ``go2rtc_webrtc_port`` (UDP+TCP). That port is host-wide, so only one
-    ``lan`` app per host can have a go2rtc companion with WebRTC.
+    A ``lan`` go2rtc runs on the host network. Its API (``lan_go2rtc_port_base
+    + slot``) listens on loopback only: browsers reach it through the app,
+    which checks who may watch or talk before relaying, so go2rtc's own
+    unauthenticated API (and its stream list and editor) is not on the LAN.
+    WebRTC media listens on ``go2rtc_webrtc_port`` (UDP+TCP), which a browser
+    can only use after signalling through the app. That port is host-wide, so
+    only one ``lan`` app per host can have a go2rtc companion with WebRTC.
     """
     if plan.network != NETWORK_LAN:
         return {"api": {"listen": f":{GO2RTC_PORT}"}, "rtsp": {"listen": ""},
@@ -222,7 +224,7 @@ def go2rtc_config(cfg, plan):
     if cfg.go2rtc_candidates:
         webrtc["candidates"] = list(cfg.go2rtc_candidates)
     return {
-        "api": {"listen": f":{lan_go2rtc_port(cfg, plan.slot)}", "origin": "*"},
+        "api": {"listen": f"127.0.0.1:{lan_go2rtc_port(cfg, plan.slot)}"},
         "rtsp": {"listen": ""},
         "webrtc": webrtc,
         "log": {"level": "warn"},
@@ -232,9 +234,10 @@ def go2rtc_config(cfg, plan):
 def aec_container(cfg, plan):
     """bdh-aec (doorbell echo cancellation) next to a ``lan`` app's go2rtc.
 
-    Host network like go2rtc, which pulls ``/aec.ts`` from it; browsers reach
-    its HTTP port (``lan_aec_port_base + slot``) for the talk websocket, which
-    it relays to its loopback-only talk port and on to go2rtc.
+    Host network like go2rtc, which pulls ``/aec.ts`` from it. Its HTTP port
+    (``lan_aec_port_base + slot``) is loopback-only like go2rtc's API: the app
+    relays the kiosk's talk websocket to it after checking who may talk, and
+    aec relays it on through its loopback-only talk port to go2rtc.
     """
     if plan.network != NETWORK_LAN or "go2rtc" not in plan.companions:
         raise ValueError("the aec companion needs a lan app with go2rtc")
@@ -246,6 +249,7 @@ def aec_container(cfg, plan):
         "user": UID,
         "environment": {
             "GO2RTC": f"http://127.0.0.1:{lan_go2rtc_port(cfg, plan.slot)}",
+            "HTTP_HOST": "127.0.0.1",
             "HTTP_PORT": str(cfg.lan_aec_port_base + plan.slot),
             "TALK_PORT": str(cfg.lan_aec_talk_port_base + plan.slot),
             "HOME": "/tmp",
