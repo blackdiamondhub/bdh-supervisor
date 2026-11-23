@@ -8,8 +8,8 @@ asgiref==3.13.0 \
     --hash=sha256:034cc8cbf72d00553b4be256703ac545120b4e50af13b49dec99da899aeeecb4 \
     --hash=sha256:f9596a2434512686473d50f96ff6207fbba49ae1a785dfac614df4aeb085674d
     # via django
-bdh-sdk @ https://github.com/blackdiamondlodge/bdh-sdk/releases/download/v0.40.0/bdh_sdk-0.40.0-py3-none-any.whl \
-    --hash=sha256:2ffa906aded01f4d4cd6161a8cb76c0751a9f68a0236ad5ca698f6e1502853aa
+bdh-sdk @ https://github.com/blackdiamondlodge/bdh-sdk/releases/download/v0.41.0/bdh_sdk-0.41.0-py3-none-any.whl \
+    --hash=sha256:22b697f29e2b87e0df2652f5ea687b1a1171e1bf205a29b26b4e0c3dafdf769d
     # via -r runtime/requirements.in
 certifi==2026.10.23 \
     --hash=sha256:a9895e6e2758b371e0545e321a3a8fd1fcfd9829ada8824a936dfb16aaaf36cd \
