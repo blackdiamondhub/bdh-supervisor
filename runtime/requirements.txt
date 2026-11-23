@@ -10,8 +10,8 @@ asgiref==3.13.0 \
     # via
     #   channels
     #   django
-bdh-sdk @ https://github.com/blackdiamondlodge/bdh-sdk/releases/download/v0.42.0/bdh_sdk-0.42.0-py3-none-any.whl \
-    --hash=sha256:7650aa3b389031a297bd8c6730de62105ce9b9012690d545360bea11e73bdd92
+bdh-sdk @ https://github.com/blackdiamondlodge/bdh-sdk/releases/download/v0.43.0/bdh_sdk-0.43.0-py3-none-any.whl \
+    --hash=sha256:0fb94c3766bc84d34ff0b52b3b90b0a4168a57e690f6c48fa41baea991a6ed02
     # via -r runtime/requirements.in
 certifi==2026.10.23 \
     --hash=sha256:a9895e6e2758b371e0545e321a3a8fd1fcfd9829ada8824a936dfb16aaaf36cd \
