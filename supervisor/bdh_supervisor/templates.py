@@ -24,6 +24,7 @@ image: user, entrypoint, command, working dir, environment, mounts (only
 ``VOLUME``s or set ``ENV`` beyond their base's, so nothing in the image can
 add anonymous volumes or environment.
 """
+import hashlib
 import json
 
 from .models import NETWORK_LAN, NETWORK_OUTBOUND
@@ -35,6 +36,7 @@ GATEWAY_PROXY_PORT = 3128
 GATEWAY_NAME = "bdh-gateway"
 EGRESS_NETWORK = "bdh-egress"
 MANAGED = "bdh.managed"
+SPEC_LABEL = "bdh.spec"
 LOG_CONFIG = {"type": "json-file", "config": {"max-size": "1m", "max-file": "2"}}
 COMPANION_MEMORY_MB = 192
 HELPER_MEMORY_MB = 128
@@ -96,6 +98,19 @@ def upstream(cfg, plan):
 
 def health_url(cfg, plan):
     return upstream(cfg, plan) + "/_bdh/health"
+
+
+def spec_hash(spec):
+    """A digest of everything a container spec asks for (not its own label).
+
+    The driver stamps it on containers it creates as ``SPEC_LABEL``; a running
+    container whose stamp differs from its current spec's (a template change
+    in a supervisor update, a new go2rtc listen address, env, ...) is
+    recreated by the reconcile loop.
+    """
+    clean = dict(spec, labels={k: v for k, v in (spec.get("labels") or {}).items() if k != SPEC_LABEL})
+    raw = json.dumps(clean, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 def labels(app_id=None, role="app", extra=None):

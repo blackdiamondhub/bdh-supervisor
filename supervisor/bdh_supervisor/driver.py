@@ -25,6 +25,10 @@ class ContainerState:
     companions: dict = field(default_factory=dict)
     # Companions whose container runs an older image than their tag now points at.
     stale_companions: list = field(default_factory=list)
+    # Containers ("app" or a companion name) created from a different spec
+    # than the plan now asks for, or companions the plan no longer has.
+    # Only filled in when ``state`` is given the plan.
+    outdated: list = field(default_factory=list)
 
 
 class RuntimeDriver(ABC):
@@ -71,8 +75,11 @@ class RuntimeDriver(ABC):
         volumes when ``purge_data``)."""
 
     @abstractmethod
-    def state(self, app_id) -> ContainerState:
-        """The app container's state (and whether its companions run)."""
+    def state(self, app_id, plan=None) -> ContainerState:
+        """The app container's state (and whether its companions run).
+
+        With ``plan``, also which containers differ from what ``start(plan)``
+        would create now (``outdated``)."""
 
     @abstractmethod
     def logs(self, app_id, lines):

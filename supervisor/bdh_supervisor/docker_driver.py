@@ -148,7 +148,8 @@ class DockerDriver(RuntimeDriver):
             networking = self.api.create_networking_config({spec["network"]: endpoint})
         created = self.api.create_container(
             spec["image"], command=spec["command"], name=spec["name"], user=spec["user"],
-            environment=spec["environment"], labels=spec["labels"], entrypoint=spec["entrypoint"],
+            environment=spec["environment"], labels={**spec["labels"], T.SPEC_LABEL: T.spec_hash(spec)},
+            entrypoint=spec["entrypoint"],
             working_dir=spec.get("working_dir"), healthcheck=spec.get("healthcheck"),
             host_config=host_config, networking_config=networking, detach=True,
             network_disabled=spec["host_config"].get("network_mode") == "none",
@@ -339,12 +340,13 @@ class DockerDriver(RuntimeDriver):
             except NotFound:
                 pass
 
-    def state(self, app_id):
+    def state(self, app_id, plan=None):
         try:
             attrs = self.api.inspect_container(T.container_name(app_id))
         except NotFound:
             return ContainerState()
         st = attrs.get("State") or {}
+        live = {"app": attrs}
         companions = {}
         stale = []
         for name in COMPANIONS:
@@ -352,6 +354,7 @@ class DockerDriver(RuntimeDriver):
                 c = self.api.inspect_container(T.container_name(app_id, name))
             except NotFound:
                 continue
+            live[name] = c
             companions[name] = bool((c.get("State") or {}).get("Running"))
             latest = self._image_id(T.companion_image(self.cfg, name))
             if latest and c.get("Image") and c["Image"] != latest:
@@ -361,7 +364,24 @@ class DockerDriver(RuntimeDriver):
             oom_killed=bool(st.get("OOMKilled")), started_at=st.get("StartedAt") or "",
             image_id=attrs.get("Image") or "", status=st.get("Status") or "",
             companions=companions, stale_companions=stale,
+            outdated=self._outdated(plan, live) if plan else [],
         )
+
+    def _outdated(self, plan, live):
+        """Containers whose spec stamp differs from what ``start(plan)`` would create.
+
+        Containers from before the stamp existed have none and count as
+        outdated once; their recreation stamps them.
+        """
+        wanted = {"app": T.app_container(self.cfg, plan)}
+        wanted.update((n, T.companion_container(self.cfg, plan, n)) for n in plan.companions)
+        out = []
+        for role, c in live.items():
+            spec = wanted.get(role)
+            stamp = ((c.get("Config") or {}).get("Labels") or {}).get(T.SPEC_LABEL)
+            if spec is None or stamp != T.spec_hash(spec):
+                out.append(role)
+        return out
 
     def logs(self, app_id, lines):
         try:

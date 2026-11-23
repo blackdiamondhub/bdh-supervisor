@@ -225,6 +225,52 @@ async def test_stale_companion_image_restarts_running_app(manager, driver):
     assert len(driver.started()) == starts + 1
 
 
+async def test_changed_spec_restarts_running_app_once(manager, driver):
+    """Containers made from an older spec (e.g. a supervisor update changed a
+    companion template) are recreated without a manual restart, once."""
+    driver.manifest_for("hello", companions=["go2rtc"])
+    await installed(manager)
+    await manager.start("hello")
+    starts = len(driver.started())
+    await manager.reconcile_app("hello")
+    assert len(driver.started()) == starts
+    driver.containers["hello"]["outdated"] = ["go2rtc"]
+    await manager.reconcile_app("hello")
+    assert len(driver.started()) == starts + 1
+    assert not manager.apps["hello"].get("failures")
+    await manager.reconcile_app("hello")
+    assert len(driver.started()) == starts + 1
+
+
+async def test_changed_spec_restart_failure_backs_off(manager, driver, clock):
+    driver.manifest_for("hello", companions=["go2rtc"])
+    await installed(manager)
+    await manager.start("hello")
+    starts = len(driver.started())
+    driver.containers["hello"]["outdated"] = ["app"]
+    driver.start_error = "pull failed"
+    await manager.reconcile_app("hello")
+    await manager.reconcile_app("hello")
+    assert len(driver.started()) == starts + 1
+    assert manager.apps["hello"]["failures"] == 1
+    driver.start_error = None
+    clock.advance(manager.cfg.backoff_max + 1)
+    await manager.reconcile_app("hello")
+    assert len(driver.started()) == starts + 2
+    assert driver.containers["hello"]["outdated"] == []
+
+
+async def test_changed_spec_leaves_stopped_app_alone(manager, driver):
+    driver.manifest_for("hello", companions=["go2rtc"])
+    await installed(manager)
+    await manager.start("hello")
+    await manager.stop("hello")
+    starts = len(driver.started())
+    driver.containers["hello"]["outdated"] = ["go2rtc"]
+    await manager.reconcile_app("hello")
+    assert len(driver.started()) == starts
+
+
 async def test_stale_companion_image_leaves_stopped_app_alone(manager, driver):
     driver.manifest_for("hello", companions=["go2rtc"])
     await installed(manager)

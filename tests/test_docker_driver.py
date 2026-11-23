@@ -67,6 +67,67 @@ def test_state_flags_companions_on_an_old_image(cfg):
     assert d.state("cameras").stale_companions == ["aec"]
 
 
+def _live(cfg, plan):
+    """A DockerDriver whose containers are what ``start(plan)`` created."""
+    from docker.errors import NotFound
+
+    d = DockerDriver(cfg, client=mock.MagicMock())
+    containers = {}
+
+    def create(image, name, labels, **kw):
+        containers[name] = {"State": {"Running": True}, "Image": "sha256:x", "Config": {"Labels": labels}}
+        return {"Id": name}
+
+    def inspect(name):
+        if name not in containers:
+            raise NotFound(name)
+        return containers[name]
+
+    d.api.create_container.side_effect = create
+    d.api.inspect_container.side_effect = inspect
+    d._image_id = lambda ref: None
+    d._ensure_image = d._ensure_volume = lambda *a: None
+    d._remove_app_containers = d._remove_network = lambda app_id: None
+    d.start(plan)
+    return d, containers
+
+
+def test_state_unchanged_spec_is_not_outdated(cfg):
+    d, _ = _live(cfg, _plan())
+    assert d.state("cameras", _plan()).outdated == []
+    assert d.state("cameras").outdated == []
+
+
+def test_state_flags_containers_from_an_older_template(cfg, monkeypatch):
+    """A supervisor update that changes a template (here go2rtc's listen
+    address) must reach running containers."""
+    from bdh_supervisor import templates as T
+
+    d, _ = _live(cfg, _plan())
+    old = T.go2rtc_config
+    monkeypatch.setattr(T, "go2rtc_config", lambda c, p: {**old(c, p), "api": {"listen": ":11900"}})
+    assert d.state("cameras", _plan()).outdated == ["go2rtc"]
+
+
+def test_state_flags_changed_app_env_and_unstamped_containers(cfg):
+    import dataclasses
+
+    d, containers = _live(cfg, _plan())
+    other = dataclasses.replace(cfg, lan_aec_port_base=cfg.lan_aec_port_base + 1)
+    d.cfg = other
+    assert d.state("cameras", _plan()).outdated == ["app", "aec"]
+    d.cfg = cfg
+    del containers["bdh-app-cameras-go2rtc"]["Config"]["Labels"]["bdh.spec"]
+    assert d.state("cameras", _plan()).outdated == ["go2rtc"]
+
+
+def test_state_flags_companions_the_plan_dropped(cfg):
+    import dataclasses
+
+    d, _ = _live(cfg, _plan())
+    assert d.state("cameras", dataclasses.replace(_plan(), companions=("go2rtc",))).outdated == ["app", "aec"]
+
+
 def test_prepare_repulls_companion_tags_best_effort(cfg):
     from docker.errors import APIError
 

@@ -408,11 +408,11 @@ class Manager:
         if lock.locked():
             return
         async with lock:
-            state = await asyncio.to_thread(self.driver.state, app_id)
             now = self.clock()
             plan = self.plan(rec)
             if rec["desired"] != RUNNING:
                 return
+            state = await asyncio.to_thread(self.driver.state, app_id, plan)
             down = [n for n in plan.companions if not state.companions.get(n)]
             if state.running and down and not rec.get("next_start"):
                 # A dead companion (e.g. go2rtc OOM) leaves the app up but
@@ -422,10 +422,16 @@ class Manager:
                 self.save()
                 return
             if state.running and not down:
-                if state.stale_companions:
-                    # prepare() re-pulled a companion tag (e.g. a bdh-aec fix): pick it up.
-                    log.info("%s: newer %s image; restarting", app_id, ", ".join(state.stale_companions))
+                if (state.stale_companions or state.outdated) and now >= rec.get("next_start", 0):
+                    # prepare() re-pulled a companion tag (e.g. a bdh-aec fix), or
+                    # the containers were made from an older spec (e.g. a supervisor
+                    # update changed a template): recreate the set to pick it up.
+                    if state.stale_companions:
+                        log.info("%s: newer %s image; restarting", app_id, ", ".join(state.stale_companions))
+                    if state.outdated:
+                        log.info("%s: %s spec changed; restarting", app_id, ", ".join(state.outdated))
                     rec["last_start"] = now
+                    rec["next_start"] = 0
                     try:
                         await asyncio.to_thread(self.driver.start, plan)
                     except (DriverError, OSError) as exc:
