@@ -2,20 +2,20 @@
 
 The hub only names an app and version; the supervisor looks the image up in
 the catalog itself (``BDH_CATALOG_URL``, normally
-``https://raw.githubusercontent.com/blackdiamondlodge/bdh-app-catalog/main/catalog.json``),
+``https://raw.githubusercontent.com/blackdiamondhub/bdh-app-catalog/main/catalog.json``),
 so nothing the hub sends ends up in an image reference. Format (schema 1, see
-blackdiamondlodge/bdh-app-catalog)::
+blackdiamondhub/bdh-app-catalog)::
 
     {"schema": 1,
-     "apps": {"hello": {"repo": "blackdiamondlodge/bdh-app-hello",
+     "apps": {"hello": {"repo": "blackdiamondhub/bdh-app-hello",
                         "versions": [{"version": "1.0.0", "hub_api": 2, "kind": "image",
-                                      "image": "ghcr.io/blackdiamondlodge/bdh-app-hello@sha256:<hex>",
-                                      "base": "ghcr.io/blackdiamondlodge/bdh-app-runtime@sha256:<hex>",
+                                      "image": "ghcr.io/blackdiamondhub/bdh-app-hello@sha256:<hex>",
+                                      "base": "ghcr.io/blackdiamondhub/bdh-app-runtime@sha256:<hex>",
                                       "build": "<builder run>", ...}]}}}
 
 Images come only from ``<prefix>bdh-app-<id>`` for an accepted prefix
-(``BDH_IMAGE_PREFIXES``: ``ghcr.io/blackdiamondlodge/`` and
-``ghcr.io/blackdiamondhub/``) and are always pinned by digest; ``base`` must
+(``BDH_IMAGE_PREFIXES``: ``ghcr.io/blackdiamondhub/`` and
+``ghcr.io/blackdiamondlodge/``) and are always pinned by digest; ``base`` must
 be a digest of ``<prefix>bdh-app-runtime`` (its prefix may differ from the
 image's). Wheel entries (``kind: wheel``, hub API 1) are not runnable here.
 
@@ -123,7 +123,7 @@ def find_version(catalog, app_id, version, hub_api, prefix):
 
 
 class Catalog:
-    def __init__(self, url, prefix=("ghcr.io/blackdiamondlodge/", "ghcr.io/blackdiamondhub/"), allow_http=False,
+    def __init__(self, url, prefix=("ghcr.io/blackdiamondhub/", "ghcr.io/blackdiamondlodge/"), allow_http=False,
                  opener=None):
         self.url = url
         self.prefix = _prefixes(prefix)

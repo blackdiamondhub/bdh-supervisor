@@ -10,12 +10,12 @@
 #   add a label (same layers, new digests: a platform rebuild);
 # - dist/images.json with their digest references.
 #
-# BDH_SDK is a checkout of blackdiamondlodge/bdh-sdk (CI uses the v0 tag).
+# BDH_SDK is a checkout of blackdiamondhub/bdh-sdk (CI uses the v0 tag).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 sdk=$(cd "${BDH_SDK:?set BDH_SDK to a bdh-sdk checkout}" && pwd)
 registry=localhost:5000
-prefix=$registry/blackdiamondlodge
+prefix=$registry/blackdiamondhub
 runtime=${RUNTIME_IMAGE:-bdh-app-runtime:test}
 
 docker build -q -f runtime/Dockerfile -t "$runtime" . >/dev/null

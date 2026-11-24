@@ -9,7 +9,7 @@
 FROM python:3.13-slim
 
 ARG HUB_API=2
-LABEL org.opencontainers.image.source="https://github.com/blackdiamondlodge/bdh-supervisor" \
+LABEL org.opencontainers.image.source="https://github.com/blackdiamondhub/bdh-supervisor" \
       org.opencontainers.image.description="Black Diamond Hub app runtime base (hub API ${HUB_API})" \
       org.opencontainers.image.licenses="MIT" \
       org.blackdiamondlodge.bdh.runtime="1" \

@@ -37,20 +37,20 @@ jobs:
           file: runtime/Dockerfile
           push: true
           tags: |
-            ghcr.io/blackdiamondlodge/bdh-app-runtime:hub-api-${{ steps.api.outputs.hub_api }}
-            ghcr.io/blackdiamondlodge/bdh-app-runtime:sha-${{ github.sha }}
+            ghcr.io/blackdiamondhub/bdh-app-runtime:hub-api-${{ steps.api.outputs.hub_api }}
+            ghcr.io/blackdiamondhub/bdh-app-runtime:sha-${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
       - uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ghcr.io/blackdiamondlodge/bdh-app-runtime
+          subject-name: ghcr.io/blackdiamondhub/bdh-app-runtime
           subject-digest: ${{ steps.runtime.outputs.digest }}
           push-to-registry: true
       - name: Base digest
         # The catalog builder builds every app FROM this digest (it resolves
         # hub-api-N itself; a new digest there means a rebuild of all apps).
         run: |
-          echo "ghcr.io/blackdiamondlodge/bdh-app-runtime@${{ steps.runtime.outputs.digest }}"
-          echo "### bdh-app-runtime: \`ghcr.io/blackdiamondlodge/bdh-app-runtime@${{ steps.runtime.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "ghcr.io/blackdiamondhub/bdh-app-runtime@${{ steps.runtime.outputs.digest }}"
+          echo "### bdh-app-runtime: \`ghcr.io/blackdiamondhub/bdh-app-runtime@${{ steps.runtime.outputs.digest }}\`" >> "$GITHUB_STEP_SUMMARY"
       - name: bdh-supervisor
         id: supervisor
         uses: docker/build-push-action@v6
@@ -59,11 +59,11 @@ jobs:
           file: supervisor/Dockerfile
           push: true
           tags: |
-            ghcr.io/blackdiamondlodge/bdh-supervisor:latest
-            ghcr.io/blackdiamondlodge/bdh-supervisor:sha-${{ github.sha }}
+            ghcr.io/blackdiamondhub/bdh-supervisor:latest
+            ghcr.io/blackdiamondhub/bdh-supervisor:sha-${{ github.sha }}
           labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
       - uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ghcr.io/blackdiamondlodge/bdh-supervisor
+          subject-name: ghcr.io/blackdiamondhub/bdh-supervisor
           subject-digest: ${{ steps.supervisor.outputs.digest }}
           push-to-registry: true

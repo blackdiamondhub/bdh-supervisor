@@ -145,7 +145,7 @@ def test_gc_collects_images_named_under_either_org(cfg):
     calls = [c.args[0] for c in d.api.remove_image.call_args_list]
     # The dual-named image loses one name first (Docker won't delete an image in
     # two repositories by id), then goes; each image is removed only once.
-    assert calls == [f"{OLD_REPO}@sha256:1", "sha256:dual", "sha256:new"]
+    assert calls == [f"{NEW_REPO}@sha256:1", "sha256:dual", "sha256:new"]
     assert {c.kwargs["name"] for c in d.api.images.call_args_list} == {OLD_REPO, NEW_REPO}
 
 
