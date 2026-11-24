@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from bdh_supervisor.catalog import Catalog, CatalogError, find_version
+from bdh_supervisor.catalog import Catalog, CatalogError, find_version, same_image
 
 P = "ghcr.io/blackdiamondlodge/"
 D1, D2 = "sha256:" + "a" * 64, "sha256:" + "b" * 64
@@ -74,6 +74,45 @@ def test_bad_entries_are_rejected(bad):
 def test_prefix_is_configurable():
     cat = one(image=f"localhost:5000/bdh-app-hello@{D1}", base=f"localhost:5000/bdh-app-runtime@{D2}")
     assert find_version(cat, "hello", "1.0.0", 2, "localhost:5000/").image.startswith("localhost:5000/")
+
+
+N = "ghcr.io/blackdiamondhub/"
+BOTH = (P, N)
+
+
+@pytest.mark.parametrize(("image", "base"), [
+    (f"{N}bdh-app-hello@{D1}", f"{N}bdh-app-runtime@{D2}"),
+    (f"{N}bdh-app-hello@{D1}", BASE),                         # mid-rename: image moved, base not yet
+    (IMG, f"{N}bdh-app-runtime@{D2}"),
+    (IMG, BASE),
+])
+def test_either_org_prefix_is_accepted(image, base):
+    ref = find_version(one(image=image, base=base), "hello", "1.0.0", 2, BOTH)
+    assert (ref.image, ref.base) == (image, base)
+
+
+@pytest.mark.parametrize("bad", [
+    {"image": f"ghcr.io/evil/bdh-app-hello@{D1}"},
+    {"base": f"ghcr.io/evil/bdh-app-runtime@{D2}"},
+    {"image": f"{N}bdh-app-other@{D1}"},
+])
+def test_foreign_prefixes_are_still_rejected(bad):
+    with pytest.raises(CatalogError):
+        find_version(one(**bad), "hello", "1.0.0", 2, BOTH)
+
+
+def test_new_prefix_is_rejected_unless_accepted():
+    with pytest.raises(CatalogError):
+        find_version(one(image=f"{N}bdh-app-hello@{D1}"), "hello", "1.0.0", 2, P)
+
+
+def test_same_image_ignores_only_the_accepted_prefix():
+    assert same_image(IMG, f"{N}bdh-app-hello@{D1}", BOTH)
+    assert same_image(IMG, IMG, BOTH)
+    assert not same_image(IMG, f"{N}bdh-app-hello@{D2}", BOTH)       # another digest
+    assert not same_image(IMG, f"{N}bdh-app-other@{D1}", BOTH)       # another repo
+    assert not same_image(IMG, f"ghcr.io/evil/bdh-app-hello@{D1}", BOTH)
+    assert not same_image(IMG, f"{N}bdh-app-hello@{D1}", P)          # new prefix not accepted
 
 
 class Resp(io.BytesIO):
