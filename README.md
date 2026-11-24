@@ -4,8 +4,8 @@ Runs Black Diamond Hub apps, each in its own hardened container built from its o
 
 | Image | Tags | What it is |
 |---|---|---|
-| `ghcr.io/blackdiamondlodge/bdh-app-runtime` | `hub-api-2`, `sha-<commit>` | The **base** every app image is built `FROM`. It contains only the common runtime: Python 3.13, Django, uvicorn (one worker), whitenoise, requests, websocket-client, channels, websockets and the pinned `bdh-sdk`. It also ships `/opt/bdh/constraints.txt` (its exact pins), `/opt/bdh/check.py` and `/opt/bdh/hub_api`, and is labelled `org.blackdiamondlodge.bdh.runtime=1` and `org.blackdiamondlodge.bdh.hub_api=2`. App libraries are **not** in the base. |
-| `ghcr.io/blackdiamondlodge/bdh-supervisor` | `latest`, `sha-<commit>` | The supervisor: a small FastAPI service and the **only** process with the Docker socket. The same image also provides the gateway container and the one-shot firewall helper. |
+| `ghcr.io/blackdiamondhub/bdh-app-runtime` | `hub-api-2`, `sha-<commit>` | The **base** every app image is built `FROM`. It contains only the common runtime: Python 3.13, Django, uvicorn (one worker), whitenoise, requests, websocket-client, channels, websockets and the pinned `bdh-sdk`. It also ships `/opt/bdh/constraints.txt` (its exact pins), `/opt/bdh/check.py` and `/opt/bdh/hub_api`, and is labelled `org.blackdiamondlodge.bdh.runtime=1` and `org.blackdiamondlodge.bdh.hub_api=2`. App libraries are **not** in the base. |
+| `ghcr.io/blackdiamondhub/bdh-supervisor` | `latest`, `sha-<commit>` | The supervisor: a small FastAPI service and the **only** process with the Docker socket. The same image also provides the gateway container and the one-shot firewall helper. |
 
 `publish.yml` pushes both images on every push to `main`, attests them (`actions/attest-build-provenance` with `push-to-registry`), and writes the base digest to the run summary. Both GHCR packages are public, so hubs pull them without credentials.
 
@@ -15,7 +15,7 @@ The hub never talks to Docker. It tells the supervisor *which app and which vers
 
 Apps don't build images. An app repo publishes a GitHub release with a wheel, a hash-locked lockfile and its manifest (the SDK's `app-release.yml`). The catalog repo's builder workflow (`bdh-app-catalog/.github/workflows/build.yml`) then, for each app:
 
-1. builds `ghcr.io/blackdiamondlodge/bdh-app-<id>` from the SDK template, `FROM bdh-app-runtime:hub-api-2@sha256:…`;
+1. builds `ghcr.io/blackdiamondhub/bdh-app-<id>` from the SDK template, `FROM bdh-app-runtime:hub-api-2@sha256:…`;
 2. installs the wheel and its locked dependencies with `pip install --require-hashes -c /opt/bdh/constraints.txt`, runs `pip check`, and fails if any base-owned distribution changed;
 3. runs `compileall` on the app layer and resets `USER` to the non-root user;
 4. smoke-tests the image (imports, migrations, `/_bdh/health`);
@@ -30,8 +30,8 @@ A catalog version entry for an image looks like this:
   "version": "2.1.0",
   "hub_api": 2,
   "kind": "image",
-  "image": "ghcr.io/blackdiamondlodge/bdh-app-cameras@sha256:<64 hex>",
-  "base": "ghcr.io/blackdiamondlodge/bdh-app-runtime@sha256:<64 hex>",
+  "image": "ghcr.io/blackdiamondhub/bdh-app-cameras@sha256:<64 hex>",
+  "base": "ghcr.io/blackdiamondhub/bdh-app-runtime@sha256:<64 hex>",
   "build": "<builder run id>",
   "permissions": ["…"], "network": "lan", "lifecycle": "always", "memory_mb": 96, "companions": ["go2rtc", "aec"]
 }
@@ -39,7 +39,7 @@ A catalog version entry for an image looks like this:
 
 The supervisor only accepts `kind: "image"` entries whose `hub_api` equals its own. `image` must be `<prefix>bdh-app-<same id>@sha256:…` and `base` must be `<prefix>bdh-app-runtime@sha256:…`, each under one of the accepted prefixes (`BDH_IMAGE_PREFIX` plus `BDH_IMAGE_PREFIXES`; image and base may use different ones). Tags are refused.
 
-The GitHub org is moving from `blackdiamondlodge` to `blackdiamondhub`; GHCR keeps the digests, so both `ghcr.io/blackdiamondlodge/` and `ghcr.io/blackdiamondhub/` are accepted. A catalog change that only moves an installed app's image (or base) to another accepted prefix with the same digest is not an upgrade: the supervisor updates the recorded name and leaves the app running (no pull, re-verification, snapshot or restart).
+The GitHub org moved from `blackdiamondlodge` to `blackdiamondhub`; GHCR kept the digests, so both `ghcr.io/blackdiamondhub/` and `ghcr.io/blackdiamondlodge/` are accepted. A catalog change that only moves an installed app's image (or base) to another accepted prefix with the same digest is not an upgrade: the supervisor updates the recorded name and leaves the app running (no pull, re-verification, snapshot or restart).
 
 ### What the supervisor checks before running an image
 
@@ -84,7 +84,7 @@ The GitHub org is moving from `blackdiamondlodge` to `blackdiamondhub`; GHCR kee
   * Apps cannot reach each other, the LAN, the Docker host or the cloud metadata address.
 * **Companions** such as `go2rtc` are started from a platform template on the app's network at `.3`, with the same hardening and a 64 MB limit. The app receives the companion's address as `BDH_GO2RTC_URL`.
   For a `lan` app, go2rtc runs on the host network: its API listens on loopback only at `11900+slot`. Browsers never reach it directly: the app serves the player script and relays its websocket after checking who may watch. WebRTC listens on `8555` UDP+TCP. WebRTC over UDP can't go through Docker's port proxy, so this is a host-wide port: only one `lan` app per host can have a go2rtc companion, and the hub's own go2rtc must be removed first. Set `BDH_GO2RTC_CANDIDATES` to the host's LAN `ip:8555` so browsers get a reachable candidate.
-  `aec` ([bdh-aec](https://github.com/blackdiamondlodge/bdh-aec), doorbell echo cancellation) is for `lan` apps that also declare `go2rtc`. It runs on the host network as the same unprivileged user with a 192 MB limit. Its HTTP port, `12200+slot`, listens on loopback only. It serves `/aec.ts` to go2rtc and the `/api/talk` websocket, which the app relays from the kiosk after checking who may talk. It relays talk audio through a loopback-only port at `12500+slot` to go2rtc. The app receives its address as `BDH_AEC_URL`.
+  `aec` ([bdh-aec](https://github.com/blackdiamondhub/bdh-aec), doorbell echo cancellation) is for `lan` apps that also declare `go2rtc`. It runs on the host network as the same unprivileged user with a 192 MB limit. Its HTTP port, `12200+slot`, listens on loopback only. It serves `/aec.ts` to go2rtc and the `/api/talk` websocket, which the app relays from the kiosk after checking who may talk. It relays talk audio through a loopback-only port at `12500+slot` to go2rtc. The app receives its address as `BDH_AEC_URL`.
   Companion images are tags (`BDH_GO2RTC_IMAGE`, `BDH_AEC_IMAGE`). The supervisor re-pulls them hourly with its firewall refresh, and restarts a running app whose companion is on an older image. Stopped apps pick up the new image on their next start. Likewise, each container the supervisor creates is labelled with a hash of its generated spec (`bdh.spec`: image, command, env, go2rtc config, ports, mounts). When a supervisor update changes what it would generate, running apps are recreated once on the next reconcile; containers from before the label existed are recreated once.
 * **Lifecycle**
   * `on_demand` (default): the app is stopped after 10 minutes without activity (`BDH_IDLE_TIMEOUT`).
@@ -165,20 +165,20 @@ Apps are identified by catalog id (`[a-z0-9][a-z0-9_-]{0,63}`).
 | Variable | Default | |
 |---|---|---|
 | `BDH_SUPERVISOR_TOKEN` | — (required, ≥ 32 chars) | Shared secret with the hub. |
-| `BDH_CATALOG_URL` | — (required) | e.g. `https://raw.githubusercontent.com/blackdiamondlodge/bdh-app-catalog/main/catalog.json` |
+| `BDH_CATALOG_URL` | — (required) | e.g. `https://raw.githubusercontent.com/blackdiamondhub/bdh-app-catalog/main/catalog.json` |
 | `BDH_SUPERVISOR_SOCKET` | `/run/bdh-supervisor/supervisor.sock` | |
 | `BDH_STATE_DIR` | `/state` | Holds `apps.json`, the desired state and upgrade stages (mode 0600). Mount a volume here. |
-| `BDH_IMAGE_PREFIX` | `ghcr.io/blackdiamondlodge/` | The primary image prefix: always accepted, and the one used to name images. |
-| `BDH_IMAGE_PREFIXES` | `ghcr.io/blackdiamondlodge/,ghcr.io/blackdiamondhub/` | Comma list of further prefixes app and base images may live under. |
+| `BDH_IMAGE_PREFIX` | `ghcr.io/blackdiamondhub/` | The primary image prefix: always accepted, and the one used to name images. |
+| `BDH_IMAGE_PREFIXES` | `ghcr.io/blackdiamondhub/,ghcr.io/blackdiamondlodge/` | Comma list of further prefixes app and base images may live under. |
 | `BDH_ATTESTATION` | `required` | `off` is for tests only. |
 | `BDH_ATTESTATION_REPOS` | `blackdiamondhub/bdh-app-catalog,blackdiamondlodge/bdh-app-catalog` | Comma list of repositories whose attestations API is queried, in order. |
 | `BDH_ATTESTATION_REPO` | — | Legacy single repository; if set, it is queried first. |
-| `BDH_ATTESTATION_IDENTITIES` | `https://github.com/blackdiamondlodge/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main,https://github.com/blackdiamondhub/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main` | Comma list of accepted signers. |
+| `BDH_ATTESTATION_IDENTITIES` | `https://github.com/blackdiamondhub/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main,https://github.com/blackdiamondlodge/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main` | Comma list of accepted signers. |
 | `BDH_ATTESTATION_IDENTITY` | — | Legacy single signer; if set, it is accepted too. |
 | `BDH_GITHUB_TOKEN` | — | Optional. Any read-only token; it only raises the GitHub API rate limit (60/hour without one). |
-| `BDH_SUPERVISOR_IMAGE` | `ghcr.io/blackdiamondlodge/bdh-supervisor:latest` | Used for the gateway and firewall helper. |
-| `BDH_GO2RTC_IMAGE` | `ghcr.io/blackdiamondlodge/go2rtc-nack:latest` | |
-| `BDH_AEC_IMAGE` | `ghcr.io/blackdiamondlodge/bdh-aec:latest` | |
+| `BDH_SUPERVISOR_IMAGE` | `ghcr.io/blackdiamondhub/bdh-supervisor:latest` | Used for the gateway and firewall helper. |
+| `BDH_GO2RTC_IMAGE` | `ghcr.io/blackdiamondhub/go2rtc-nack:latest` | |
+| `BDH_AEC_IMAGE` | `ghcr.io/blackdiamondhub/bdh-aec:latest` | |
 | `BDH_HUB_API` | `2` | |
 | `BDH_BROKER_HOST` / `BDH_BROKER_PORT` / `BDH_BROKER_PATH` | `172.17.0.1` / `8099` / `/_broker` | Where the hub's broker listens (`BROKER_BIND`/`BROKER_PORT`). |
 | `BDH_SUBNET_PREFIX` | `10.213` | A private `/16` reserved for apps. |
@@ -216,7 +216,7 @@ The supervisor passes only these variables. The image's own `ENV` must equal the
 ```yaml
 services:
   bdh-supervisor:
-    image: ghcr.io/blackdiamondlodge/bdh-supervisor:latest
+    image: ghcr.io/blackdiamondhub/bdh-supervisor:latest
     container_name: bdh-supervisor
     restart: unless-stopped
     network_mode: host            # needed for the BDH-APPS firewall helper and the 10.213/16 routes
@@ -224,7 +224,7 @@ services:
       com.centurylinklabs.watchtower.enable: "true"
     environment:
       BDH_SUPERVISOR_TOKEN: ${BDH_SUPERVISOR_TOKEN}
-      BDH_CATALOG_URL: https://raw.githubusercontent.com/blackdiamondlodge/bdh-app-catalog/main/catalog.json
+      BDH_CATALOG_URL: https://raw.githubusercontent.com/blackdiamondhub/bdh-app-catalog/main/catalog.json
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - bdh-supervisor-socket:/run/bdh-supervisor

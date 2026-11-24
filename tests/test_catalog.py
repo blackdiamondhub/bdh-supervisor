@@ -5,11 +5,11 @@ import pytest
 
 from bdh_supervisor.catalog import Catalog, CatalogError, find_version, same_image
 
-P = "ghcr.io/blackdiamondlodge/"
+P = "ghcr.io/blackdiamondhub/"
 D1, D2 = "sha256:" + "a" * 64, "sha256:" + "b" * 64
 IMG = f"{P}bdh-app-hello@{D1}"
 BASE = f"{P}bdh-app-runtime@{D2}"
-REL = "https://github.com/blackdiamondlodge/bdh-app-hello/releases/download"
+REL = "https://github.com/blackdiamondhub/bdh-app-hello/releases/download"
 
 
 def entry(**kw):
@@ -18,7 +18,7 @@ def entry(**kw):
     return e
 
 
-CATALOG = {"schema": 1, "apps": {"hello": {"repo": "blackdiamondlodge/bdh-app-hello", "versions": [
+CATALOG = {"schema": 1, "apps": {"hello": {"repo": "blackdiamondhub/bdh-app-hello", "versions": [
     entry(),
     entry(version="0.9.1", yanked="broken"),
     {"version": "0.9.0", "hub_api": 1, "kind": "wheel", "sha256": "a" * 64,
@@ -76,7 +76,7 @@ def test_prefix_is_configurable():
     assert find_version(cat, "hello", "1.0.0", 2, "localhost:5000/").image.startswith("localhost:5000/")
 
 
-N = "ghcr.io/blackdiamondhub/"
+N = "ghcr.io/blackdiamondlodge/"  # the pre-rename org
 BOTH = (P, N)
 
 

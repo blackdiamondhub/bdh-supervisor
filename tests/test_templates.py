@@ -6,7 +6,7 @@ from bdh_supervisor import templates as T
 from bdh_supervisor.models import AppPlan
 
 TOKEN = "ab" * 32
-IMAGE = "ghcr.io/blackdiamondlodge/bdh-app-hello@sha256:" + "c" * 64
+IMAGE = "ghcr.io/blackdiamondhub/bdh-app-hello@sha256:" + "c" * 64
 
 
 def plan(network="none", companions=(), memory_mb=96, slot=7):

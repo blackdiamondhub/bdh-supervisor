@@ -6,7 +6,7 @@ from bdh_supervisor.models import ImageRef
 
 TOKEN = "ab" * 32
 SUP_TOKEN = "s" * 40
-PREFIX = "ghcr.io/blackdiamondlodge/"
+PREFIX = "ghcr.io/blackdiamondhub/"
 BASE = PREFIX + "bdh-app-runtime@sha256:" + "b" * 64
 
 

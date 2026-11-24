@@ -11,10 +11,10 @@ def test_both_orgs_are_accepted_by_default(monkeypatch):
                 "BDH_ATTESTATION_IDENTITY", "BDH_ATTESTATION_IDENTITIES"):
         monkeypatch.delenv(var, raising=False)
     cfg = Config.from_env()
-    assert cfg.image_prefix == "ghcr.io/blackdiamondlodge/"
-    assert cfg.accepted_prefixes == ("ghcr.io/blackdiamondlodge/", "ghcr.io/blackdiamondhub/")
+    assert cfg.image_prefix == "ghcr.io/blackdiamondhub/"
+    assert cfg.accepted_prefixes == ("ghcr.io/blackdiamondhub/", "ghcr.io/blackdiamondlodge/")
     assert cfg.accepted_repos == ("blackdiamondhub/bdh-app-catalog", "blackdiamondlodge/bdh-app-catalog")
-    assert cfg.accepted_identities == (OLD, NEW)
+    assert cfg.accepted_identities == (NEW, OLD)
 
 
 def test_lists_and_legacy_single_values_from_env(monkeypatch):
@@ -37,7 +37,7 @@ def test_legacy_single_values_alone_still_work(monkeypatch):
     monkeypatch.setenv("BDH_ATTESTATION_REPO", "me/cat")
     monkeypatch.setenv("BDH_ATTESTATION_IDENTITY", "https://me")
     cfg = Config.from_env()
-    assert cfg.accepted_prefixes == ("ghcr.io/blackdiamondlodge/",)
+    assert cfg.accepted_prefixes == ("ghcr.io/blackdiamondhub/",)
     assert (cfg.accepted_repos, cfg.accepted_identities) == (("me/cat",), ("https://me",))
 
 

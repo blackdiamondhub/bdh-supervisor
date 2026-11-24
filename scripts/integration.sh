@@ -15,5 +15,5 @@ docker run --rm --network host --pid host --cap-add SYS_PTRACE -v /var/run/docke
     python:3.13 sh -c '
         pip install --quiet --root-user-action=ignore --require-hashes -r requirements-dev.txt \
         && pip install --quiet --root-user-action=ignore --no-deps \
-            "$(grep -o "https://github.com/blackdiamondlodge/bdh-sdk/releases/download/[^ ]*\.whl" runtime/requirements.in)" \
+            "$(grep -o "https://github.com/blackdiamondhub/bdh-sdk/releases/download/[^ ]*\.whl" runtime/requirements.in)" \
         && python -m pytest -m docker -s -p no:cacheprovider "$@" tests/test_integration_docker.py' sh "$@"

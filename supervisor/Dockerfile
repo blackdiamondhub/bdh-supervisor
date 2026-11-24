@@ -3,7 +3,7 @@
 # host firewall helper (`python -m bdh_supervisor.firewall`, NET_ADMIN only).
 FROM python:3.13-slim
 
-LABEL org.opencontainers.image.source="https://github.com/blackdiamondlodge/bdh-supervisor" \
+LABEL org.opencontainers.image.source="https://github.com/blackdiamondhub/bdh-supervisor" \
       org.opencontainers.image.description="Black Diamond Hub app supervisor" \
       org.opencontainers.image.licenses="MIT"
 

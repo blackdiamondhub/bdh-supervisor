@@ -20,9 +20,9 @@ def _unique(*values):
     return tuple(dict.fromkeys(v for v in values if v))
 
 
-# The GitHub org is moving from blackdiamondlodge to blackdiamondhub. GHCR
-# keeps the digests, so during the move both names are the same image, and
-# the catalog's builder signs as either org's workflow.
+# The GitHub org moved from blackdiamondlodge to blackdiamondhub. GHCR kept the
+# digests, so both names are the same image, and catalog entries built before
+# the move are signed by the old org's workflow. The new org comes first.
 OLD_ORG, NEW_ORG = "blackdiamondlodge", "blackdiamondhub"
 CATALOG_WORKFLOW = "https://github.com/{}/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main"
 
@@ -37,21 +37,21 @@ class Config:
     # <prefix>bdh-app-runtime@sha256:... for one of the accepted prefixes
     # (image_prefix and image_prefixes; see catalog.py). image_prefix is the
     # primary one, for anything that names images.
-    image_prefix: str = f"ghcr.io/{OLD_ORG}/"
-    image_prefixes: tuple = (f"ghcr.io/{OLD_ORG}/", f"ghcr.io/{NEW_ORG}/")
+    image_prefix: str = f"ghcr.io/{NEW_ORG}/"
+    image_prefixes: tuple = (f"ghcr.io/{NEW_ORG}/", f"ghcr.io/{OLD_ORG}/")
     attestation: str = "required"  # or "off" (tests only)
     # Attestations are looked up in these repositories in order (a 404 or an
     # empty list falls through to the next); a bundle signed by any of the
     # identities is accepted. The singular fields (BDH_ATTESTATION_REPO /
     # _IDENTITY, the old settings) are added to the lists when set.
     attestation_repos: tuple = (f"{NEW_ORG}/bdh-app-catalog", f"{OLD_ORG}/bdh-app-catalog")
-    attestation_identities: tuple = (CATALOG_WORKFLOW.format(OLD_ORG), CATALOG_WORKFLOW.format(NEW_ORG))
+    attestation_identities: tuple = (CATALOG_WORKFLOW.format(NEW_ORG), CATALOG_WORKFLOW.format(OLD_ORG))
     attestation_repo: str = ""
     attestation_identity: str = ""
     github_token: str = field(default="", repr=False)
-    supervisor_image: str = "ghcr.io/blackdiamondlodge/bdh-supervisor:latest"
-    go2rtc_image: str = "ghcr.io/blackdiamondlodge/go2rtc-nack:latest"
-    aec_image: str = "ghcr.io/blackdiamondlodge/bdh-aec:latest"
+    supervisor_image: str = f"ghcr.io/{NEW_ORG}/bdh-supervisor:latest"
+    go2rtc_image: str = f"ghcr.io/{NEW_ORG}/go2rtc-nack:latest"
+    aec_image: str = f"ghcr.io/{NEW_ORG}/bdh-aec:latest"
     hub_api: int = 2
     # Apps get 10.213.<slot>.0/24 each; the egress bridge is 10.213.255.0/24.
     subnet_prefix: str = "10.213"
