@@ -8,7 +8,7 @@ from pathlib import Path
 
 from . import templates as T
 from .attest import AttestationError, NoVerification
-from .catalog import CatalogError
+from .catalog import CatalogError, same_image
 from .driver import DriverError
 from .models import (
     AppPlan,
@@ -212,6 +212,12 @@ class Manager:
                     self._fail(rec, f"catalog: {exc}")
                     return
             else:
+                if rec.get("installed_version") == version and self._renamed(rec, ref):
+                    # Same digests under another accepted registry prefix (an org
+                    # rename): nothing to pull, verify or restart.
+                    log.info("sync %s: %s is now %s", app_id, rec["image"], ref.image)
+                    rec.update({"image": ref.image, "base": ref.base})
+                    self.save()
                 if rec.get("installed_version") == version and rec.get("image") == ref.image:
                     if rec.get("upgrade") or rec["status"] != INSTALLED:
                         rec.update({"upgrade": None, "status": INSTALLED, "error": ""})
@@ -221,6 +227,13 @@ class Manager:
                     start_after = await self._upgrade(rec, ref)
         if start_after:
             await self._restart_quietly(app_id)
+
+    def _renamed(self, rec, ref):
+        """True if ``ref`` is the installed image and base, only named under other accepted prefixes."""
+        prefixes = self.cfg.accepted_prefixes
+        return ((rec.get("image"), rec.get("base")) != (ref.image, ref.base)
+                and bool(rec.get("image")) and same_image(rec["image"], ref.image, prefixes)
+                and same_image(rec.get("base") or "", ref.base, prefixes))
 
     async def _upgrade(self, rec, ref):
         app_id = rec["app_id"]
@@ -480,7 +493,7 @@ class Manager:
                     and not rec.get("pinned")):
                 before = rec.get("image")
                 await self._sync(app_id, force=False)
-                if rec.get("image") != before:
+                if not same_image(rec.get("image"), before, self.cfg.accepted_prefixes):
                     synced.append(app_id)
         self.last_poll = self.clock()
         return {"upgraded": synced}

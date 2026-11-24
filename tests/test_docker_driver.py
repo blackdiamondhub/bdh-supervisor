@@ -128,6 +128,39 @@ def test_state_flags_companions_the_plan_dropped(cfg):
     assert d.state("cameras", dataclasses.replace(_plan(), companions=("go2rtc",))).outdated == ["app", "aec"]
 
 
+OLD_REPO = "ghcr.io/blackdiamondlodge/bdh-app-cameras"
+NEW_REPO = "ghcr.io/blackdiamondhub/bdh-app-cameras"
+
+
+def test_gc_collects_images_named_under_either_org(cfg):
+    d = DockerDriver(cfg, client=mock.MagicMock())
+    dual = {"Id": "sha256:dual", "RepoDigests": [f"{OLD_REPO}@sha256:1", f"{NEW_REPO}@sha256:1"],
+            "RepoTags": [f"{OLD_REPO}@sha256:1", f"{NEW_REPO}@sha256:1"]}
+    new_only = {"Id": "sha256:new", "RepoDigests": [f"{NEW_REPO}@sha256:2"], "RepoTags": []}
+    shared = {"Id": "sha256:shared", "RepoDigests": [f"{NEW_REPO}@sha256:3", "ghcr.io/evil/x@sha256:3"]}
+    current = {"Id": "sha256:current", "RepoDigests": [f"{NEW_REPO}@sha256:4"]}
+    listing = {OLD_REPO: [dual], NEW_REPO: [dual, new_only, shared, current]}
+    d.api.images.side_effect = lambda name, all: listing[name]
+    assert sorted(d.gc("cameras", {"sha256:current"})) == ["sha256:dual", "sha256:new"]
+    calls = [c.args[0] for c in d.api.remove_image.call_args_list]
+    # The dual-named image loses one name first (Docker won't delete an image in
+    # two repositories by id), then goes; each image is removed only once.
+    assert calls == [f"{OLD_REPO}@sha256:1", "sha256:dual", "sha256:new"]
+    assert {c.kwargs["name"] for c in d.api.images.call_args_list} == {OLD_REPO, NEW_REPO}
+
+
+def test_renamed_image_does_not_make_containers_outdated(cfg):
+    import dataclasses
+
+    d, _ = _live(cfg, _plan())
+    renamed = dataclasses.replace(_plan(), image=IMAGE.replace("blackdiamondlodge", "blackdiamondhub"))
+    assert d.state("cameras", renamed).outdated == []
+    rebuilt = dataclasses.replace(_plan(), image=IMAGE.replace("c" * 64, "d" * 64))
+    assert d.state("cameras", rebuilt).outdated == ["app"]
+    foreign = dataclasses.replace(_plan(), image=IMAGE.replace("blackdiamondlodge", "evil"))
+    assert d.state("cameras", foreign).outdated == ["app"]
+
+
 def test_prepare_repulls_companion_tags_best_effort(cfg):
     from docker.errors import APIError
 

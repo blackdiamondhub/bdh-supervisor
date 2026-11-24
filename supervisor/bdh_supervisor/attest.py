@@ -1,13 +1,17 @@
 """Build-provenance attestation checks for app images.
 
 Every app image is built, pushed and attested by one workflow:
-``blackdiamondlodge/bdh-app-catalog/.github/workflows/build.yml`` on ``main``
+``<org>/bdh-app-catalog/.github/workflows/build.yml`` on ``main``
 (``actions/attest-build-provenance``, Sigstore public-good instance). Before
 it pulls an image, the supervisor fetches the image digest's attestations
 from the GitHub API, verifies each Sigstore bundle (certificate chain,
 transparency log, signature) with the signer identity pinned to that
 workflow, and checks that the signed in-toto statement is SLSA provenance
 for exactly this digest. An image that no bundle vouches for is refused.
+
+While the org moves from ``blackdiamondlodge`` to ``blackdiamondhub``, both
+orgs' workflow identities are accepted (older bundles stay signed by the old
+one) and both orgs' catalog repositories are queried, the new one first.
 
 ``BDH_ATTESTATION=off`` turns this off; it exists for the integration tests,
 which build images locally. Production hubs must leave it on.
@@ -113,13 +117,24 @@ def _verifier(cls):
     return _VERIFIER
 
 
-class AttestationVerifier:
-    """Checks that ``identity`` attested an image digest (see the module docs)."""
+def _tuple(value):
+    return (value,) if isinstance(value, str) else tuple(value)
 
-    def __init__(self, repo, identity, issuer=ISSUER, token="", opener=None, verify=sigstore_verify,
+
+class AttestationVerifier:
+    """Checks that one of ``identities`` attested an image digest (see the module docs).
+
+    ``repos`` are queried in order; one that has no (good) attestation for
+    the digest, or does not exist, falls through to the next. Both take a
+    single string too.
+    """
+
+    def __init__(self, repos, identities, issuer=ISSUER, token="", opener=None, verify=sigstore_verify,
                  api=API):
-        self.repo = repo
-        self.identity = identity
+        self.repos = _tuple(repos)
+        self.identities = _tuple(identities)
+        if not self.repos or not self.identities:
+            raise ValueError("attestation needs at least one repository and signer identity")
         self.issuer = issuer
         self.token = token
         self.opener = opener or urllib.request.urlopen
@@ -147,8 +162,8 @@ class AttestationVerifier:
             raise AttestationError(f"{url.split('?')[0]} is too large")
         return raw
 
-    def _bundles(self, digest):
-        raw = self._get(f"{self.api}/repos/{self.repo}/attestations/{digest}?per_page=30", MAX_LIST_BYTES,
+    def _bundles(self, repo, digest):
+        raw = self._get(f"{self.api}/repos/{repo}/attestations/{digest}?per_page=30", MAX_LIST_BYTES,
                         github=True)
         if raw is None:
             return
@@ -179,24 +194,40 @@ class AttestationVerifier:
                 return statement
         raise AttestationError(f"the attestation does not cover {digest}")
 
+    def _verify_bundle(self, bundle, digest):
+        """The identity that signed ``bundle`` for ``digest``; raises if none did."""
+        error = None
+        for identity in self.identities:
+            try:
+                payload_type, payload = self.verify_bundle(bundle, identity, self.issuer)
+            except Exception as exc:  # noqa: BLE001 - sigstore raises many types; try the next identity
+                error = error or exc
+                continue
+            self.check_statement(payload_type, payload, digest)
+            return identity
+        raise error
+
     def verify(self, ref):
-        """Return if a bundle signed by ``identity`` attests ``ref.digest``."""
+        """Return if a bundle signed by one of ``identities`` attests ``ref.digest``."""
         digest = ref.digest
         if digest in self.verified:
             return
         errors = []
-        for bundle in self._bundles(digest):
+        for repo in self.repos:
             try:
-                payload_type, payload = self.verify_bundle(bundle, self.identity, self.issuer)
-                self.check_statement(payload_type, payload, digest)
-            except Exception as exc:  # noqa: BLE001 - sigstore raises many types; try the next bundle
-                errors.append(str(exc) or type(exc).__name__)
-                continue
-            self.verified.add(digest)
-            log.info("%s: attested by %s", ref.image, self.identity)
-            return
+                for bundle in self._bundles(repo, digest):
+                    try:
+                        identity = self._verify_bundle(bundle, digest)
+                    except Exception as exc:  # noqa: BLE001 - try the next bundle
+                        errors.append(str(exc) or type(exc).__name__)
+                        continue
+                    self.verified.add(digest)
+                    log.info("%s: attested by %s (%s)", ref.image, identity, repo)
+                    return
+            except AttestationError as exc:
+                errors.append(f"{repo}: {exc}")
         detail = "; ".join(errors[:3]) if errors else "no attestations found"
-        raise AttestationError(f"{ref.image} is not attested by {self.identity}: {detail}")
+        raise AttestationError(f"{ref.image} is not attested by {' or '.join(self.identities)}: {detail}")
 
 
 class NoVerification:
@@ -212,4 +243,4 @@ def from_config(cfg):
     # sigstore keeps its TUF trust root under XDG dirs; keep it in /state.
     for var, sub in (("XDG_CACHE_HOME", "cache"), ("XDG_DATA_HOME", "data")):
         os.environ.setdefault(var, os.path.join(cfg.state_dir, "sigstore", sub))
-    return AttestationVerifier(cfg.attestation_repo, cfg.attestation_identity, token=cfg.github_token)
+    return AttestationVerifier(cfg.accepted_repos, cfg.accepted_identities, token=cfg.github_token)

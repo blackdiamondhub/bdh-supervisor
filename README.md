@@ -37,11 +37,13 @@ A catalog version entry for an image looks like this:
 }
 ```
 
-The supervisor only accepts `kind: "image"` entries whose `hub_api` equals its own. `image` must be `<BDH_IMAGE_PREFIX>bdh-app-<same id>@sha256:…` and `base` must be `<BDH_IMAGE_PREFIX>bdh-app-runtime@sha256:…`. Tags are refused.
+The supervisor only accepts `kind: "image"` entries whose `hub_api` equals its own. `image` must be `<prefix>bdh-app-<same id>@sha256:…` and `base` must be `<prefix>bdh-app-runtime@sha256:…`, each under one of the accepted prefixes (`BDH_IMAGE_PREFIX` plus `BDH_IMAGE_PREFIXES`; image and base may use different ones). Tags are refused.
+
+The GitHub org is moving from `blackdiamondlodge` to `blackdiamondhub`; GHCR keeps the digests, so both `ghcr.io/blackdiamondlodge/` and `ghcr.io/blackdiamondhub/` are accepted. A catalog change that only moves an installed app's image (or base) to another accepted prefix with the same digest is not an upgrade: the supervisor updates the recorded name and leaves the app running (no pull, re-verification, snapshot or restart).
 
 ### What the supervisor checks before running an image
 
-1. **Attestation (trust).** Before pulling, the supervisor gets the image digest's attestations from the GitHub API (`/repos/blackdiamondlodge/bdh-app-catalog/attestations/sha256:…`). It verifies each Sigstore bundle (certificate chain, transparency log and signature) with the signer identity pinned to `https://github.com/blackdiamondlodge/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main`, then checks that the signed statement is SLSA provenance for exactly that digest. If no bundle vouches for the image, it is refused. This is the equivalent of `cosign verify-attestation --type slsaprovenance --certificate-identity … --certificate-oidc-issuer https://token.actions.githubusercontent.com`. It is on by default (`BDH_ATTESTATION=required`); `off` exists only for the integration tests, which build images locally.
+1. **Attestation (trust).** Before pulling, the supervisor gets the image digest's attestations from the GitHub API (`/repos/<org>/bdh-app-catalog/attestations/sha256:…`, trying `blackdiamondhub` and then `blackdiamondlodge`; a 404 or an empty list falls through to the next repository). It verifies each Sigstore bundle (certificate chain, transparency log and signature) with the signer identity pinned to `https://github.com/<org>/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main` for either org (bundles made before the rename stay signed by the old one), then checks that the signed statement is SLSA provenance for exactly that digest. If no bundle vouches for the image, it is refused. This is the equivalent of `cosign verify-attestation --type slsaprovenance --certificate-identity … --certificate-oidc-issuer https://token.actions.githubusercontent.com`. It is on by default (`BDH_ATTESTATION=required`); `off` exists only for the integration tests, which build images locally.
 2. **Compatibility (not security).** After pulling the image and its base by digest:
    * the base must carry the runtime and `hub_api` labels for this supervisor;
    * the app image's rootfs `diff_ids` must start with the base's `diff_ids`, so it really was built `FROM` that base;
@@ -166,10 +168,13 @@ Apps are identified by catalog id (`[a-z0-9][a-z0-9_-]{0,63}`).
 | `BDH_CATALOG_URL` | — (required) | e.g. `https://raw.githubusercontent.com/blackdiamondlodge/bdh-app-catalog/main/catalog.json` |
 | `BDH_SUPERVISOR_SOCKET` | `/run/bdh-supervisor/supervisor.sock` | |
 | `BDH_STATE_DIR` | `/state` | Holds `apps.json`, the desired state and upgrade stages (mode 0600). Mount a volume here. |
-| `BDH_IMAGE_PREFIX` | `ghcr.io/blackdiamondlodge/` | App and base images must live under this prefix. |
+| `BDH_IMAGE_PREFIX` | `ghcr.io/blackdiamondlodge/` | The primary image prefix: always accepted, and the one used to name images. |
+| `BDH_IMAGE_PREFIXES` | `ghcr.io/blackdiamondlodge/,ghcr.io/blackdiamondhub/` | Comma list of further prefixes app and base images may live under. |
 | `BDH_ATTESTATION` | `required` | `off` is for tests only. |
-| `BDH_ATTESTATION_REPO` | `blackdiamondlodge/bdh-app-catalog` | Repository whose attestations API is queried. |
-| `BDH_ATTESTATION_IDENTITY` | `https://github.com/blackdiamondlodge/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main` | The only signer accepted. |
+| `BDH_ATTESTATION_REPOS` | `blackdiamondhub/bdh-app-catalog,blackdiamondlodge/bdh-app-catalog` | Comma list of repositories whose attestations API is queried, in order. |
+| `BDH_ATTESTATION_REPO` | — | Legacy single repository; if set, it is queried first. |
+| `BDH_ATTESTATION_IDENTITIES` | `https://github.com/blackdiamondlodge/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main,https://github.com/blackdiamondhub/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main` | Comma list of accepted signers. |
+| `BDH_ATTESTATION_IDENTITY` | — | Legacy single signer; if set, it is accepted too. |
 | `BDH_GITHUB_TOKEN` | — | Optional. Any read-only token; it only raises the GitHub API rate limit (60/hour without one). |
 | `BDH_SUPERVISOR_IMAGE` | `ghcr.io/blackdiamondlodge/bdh-supervisor:latest` | Used for the gateway and firewall helper. |
 | `BDH_GO2RTC_IMAGE` | `ghcr.io/blackdiamondlodge/go2rtc-nack:latest` | |

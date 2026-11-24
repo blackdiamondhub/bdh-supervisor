@@ -153,7 +153,84 @@ def test_from_config(cfg, monkeypatch, tmp_path):
     assert isinstance(attest.from_config(dataclasses.replace(cfg, attestation="off")), attest.NoVerification)
     v = attest.from_config(cfg)
     assert isinstance(v, AttestationVerifier)
-    assert v.repo == "blackdiamondlodge/bdh-app-catalog" and v.identity == IDENTITY
+    assert v.repos == ("blackdiamondhub/bdh-app-catalog", "blackdiamondlodge/bdh-app-catalog")
+    assert v.identities == (IDENTITY, NEW_IDENTITY)
+    legacy = attest.from_config(dataclasses.replace(cfg, attestation_repo="me/cat", attestation_identity="https://x"))
+    assert legacy.repos[0] == "me/cat" and legacy.identities[-1] == "https://x"
+
+
+NEW_IDENTITY = "https://github.com/blackdiamondhub/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main"
+REPOS = ("blackdiamondhub/bdh-app-catalog", "blackdiamondlodge/bdh-app-catalog")
+
+
+class RepoApi:
+    """A fake GitHub API per repository: ``repos[repo]`` is a status or a list of bundles."""
+
+    def __init__(self, repos):
+        self.repos = repos
+        self.requests = []
+
+    def __call__(self, req, timeout):
+        self.requests.append(req.full_url)
+        repo = req.full_url.split("/repos/", 1)[1].split("/attestations/", 1)[0]
+        out = self.repos.get(repo, 404)
+        if isinstance(out, int):
+            raise urllib.error.HTTPError(req.full_url, out, "x", {}, None)
+        return Resp(json.dumps({"attestations": [{"bundle": b} for b in out]}).encode())
+
+
+def signed_by(signers):
+    """Bundle {"id": n} was signed by ``signers[n]``; verifying it as anyone else fails."""
+    calls = []
+
+    def verify(bundle_json, identity, issuer):
+        n = json.loads(bundle_json)["id"]
+        calls.append((n, identity))
+        if signers[n] != identity:
+            raise ValueError(f"Certificate's SANs do not match {identity}")
+        return attest.IN_TOTO, statement()
+
+    verify.calls = calls
+    return verify
+
+
+def multi(api, verify):
+    return AttestationVerifier(REPOS, (IDENTITY, NEW_IDENTITY), opener=api, verify=verify, api="https://api.test")
+
+
+@pytest.mark.parametrize("signer", [IDENTITY, NEW_IDENTITY])
+def test_either_orgs_workflow_is_accepted(signer):
+    verify = signed_by({0: signer})
+    multi(RepoApi({REPOS[1]: [{"id": 0}]}), verify).verify(REF)
+    assert verify.calls[-1] == (0, signer)
+
+
+def test_unknown_identity_is_refused():
+    other = "https://github.com/evil/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main"
+    api = RepoApi({REPOS[0]: [{"id": 0}], REPOS[1]: [{"id": 0}]})
+    with pytest.raises(AttestationError, match="SANs do not match"):
+        multi(api, signed_by({0: other})).verify(REF)
+
+
+@pytest.mark.parametrize("new_repo", [404, []])
+def test_repos_fall_through_in_order(new_repo):
+    """Before the rename the new repository 404s; a repo with no bundles also falls through."""
+    api = RepoApi({REPOS[0]: new_repo, REPOS[1]: [{"id": 0}]})
+    multi(api, signed_by({0: IDENTITY})).verify(REF)
+    assert [u.split("/repos/")[1].split("/attest")[0] for u in api.requests] == list(REPOS)
+
+
+def test_first_repo_that_attests_wins():
+    api = RepoApi({REPOS[0]: [{"id": 0}], REPOS[1]: [{"id": 1}]})
+    multi(api, signed_by({0: NEW_IDENTITY, 1: IDENTITY})).verify(REF)
+    assert len(api.requests) == 1
+
+
+def test_no_repo_attests_is_refused():
+    with pytest.raises(AttestationError, match="no attestations found"):
+        multi(RepoApi({}), signed_by({})).verify(REF)
+    with pytest.raises(AttestationError, match="HTTP 500"):
+        multi(RepoApi({REPOS[0]: 500}), signed_by({})).verify(REF)
 
 
 GH_IDENTITY = "https://github.com/cli/cli/.github/workflows/deployment.yml@refs/heads/trunk"

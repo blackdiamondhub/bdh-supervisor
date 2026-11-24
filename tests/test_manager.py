@@ -1,4 +1,5 @@
 import asyncio
+import itertools
 import json
 import os
 
@@ -18,8 +19,9 @@ from bdh_supervisor.manager import (
     Manager,
     NotFoundError,
 )
+from bdh_supervisor.models import ImageRef
 
-from .conftest import TOKEN, image_for
+from .conftest import PREFIX, TOKEN, image_for
 
 
 def request(**kw):
@@ -476,3 +478,97 @@ async def test_prepare_failure_is_kept(manager, driver):
     driver.prepare = boom
     assert await manager.prepare() is False
     assert manager.prepare_error == "firewall missing"
+
+
+NEW_PREFIX = "ghcr.io/blackdiamondhub/"
+
+
+def moved(catalog, image=True, base=True, prefix=NEW_PREFIX):
+    """Rewrite the catalog so the same digests are named under ``prefix`` (an org rename)."""
+    original = catalog.image
+
+    def image_(app_id, version, hub_api, force=True):
+        ref = original(app_id, version, hub_api, force)
+        swap = lambda name: prefix + name[len(PREFIX):]  # noqa: E731
+        return ImageRef(ref.version, swap(ref.image) if image else ref.image,
+                        swap(ref.base) if base else ref.base, ref.build)
+
+    catalog.image = image_
+
+
+@pytest.mark.parametrize(("image", "base"), [(True, True), (True, False), (False, True)])
+async def test_prefix_only_catalog_change_is_not_an_upgrade(manager, cfg, driver, catalog, verifier, image, base):
+    await installed(manager, version="1.0.0")
+    await installed(manager, version="1.1.0")
+    await manager.start("hello")
+    before = json.loads(json.dumps(manager.apps["hello"]))
+    driver.calls.clear()
+    verifier.verified.clear()
+    moved(catalog, image=image, base=base)
+    assert await manager.poll_catalog() == {"upgraded": []}
+    rec = await installed(manager, version="1.1.0")
+    await manager.reconcile_app("hello")
+    assert [c[0] for c in driver.calls if c[0] in ("stop", "start", "pull", "snapshot", "restore", "gc")] == []
+    assert verifier.verified == []
+    if image:
+        assert rec["image"] == NEW_PREFIX + before["image"][len(PREFIX):]
+    if base:
+        assert rec["base"] == NEW_PREFIX + before["base"][len(PREFIX):]
+    assert rec["image_id"] == before["image_id"] and rec["previous"] == before["previous"]
+    assert rec["status"] == INSTALLED and rec["upgrade"] is None and driver.containers["hello"]["running"]
+    # ...and it is persisted.
+    saved = json.load(open(os.path.join(cfg.state_dir, "apps.json")))["apps"]["hello"]
+    assert (saved["image"], saved["base"]) == (rec["image"], rec["base"])
+    # A real rebuild under the new prefix is still an upgrade.
+    catalog.builds["hello"] = "rebuilt"
+    assert await manager.poll_catalog() == {"upgraded": ["hello"]}
+    want = (NEW_PREFIX if image else PREFIX) + image_for("hello", "1.1.0", "rebuilt")[len(PREFIX):]
+    assert driver.started()[-1].image == want
+
+
+async def test_prefix_change_outside_accepted_prefixes_is_refused(manager, driver, catalog):
+    await installed(manager)
+    driver.calls.clear()
+    moved(catalog, prefix="ghcr.io/evil/")
+    rec = await installed(manager)
+    # Not a rename: it goes through the normal upgrade path (where the real
+    # catalog would already have refused the foreign prefix).
+    assert driver.named("pull")
+    assert rec["image"].startswith("ghcr.io/evil/")
+
+
+async def test_any_prefix_only_catalog_rewrite_is_a_no_op_for_every_installed_app(
+        manager, cfg, driver, catalog, verifier):
+    """The whole class: moving every app's image and base between accepted prefixes,
+    in either direction and in any mix, never stops, pulls, verifies or restarts anything."""
+    apps = {"hello": "1.0.0", "cams": "2.1.0", "lights": "0.3.0", "music": "1.4.2"}
+    for slot, (app_id, version) in enumerate(apps.items(), start=1):
+        await installed(manager, app_id, version=version, slot=slot)
+        if app_id != "music":
+            await manager.start(app_id)
+    original = catalog.image
+    prefixes = cfg.accepted_prefixes
+    assert NEW_PREFIX in prefixes and PREFIX in prefixes
+    combos = list(itertools.product(prefixes, repeat=2))
+    for round_, combo in enumerate(combos * 2):
+        driver.calls.clear()
+        verifier.verified.clear()
+
+        def image_(app_id, version, hub_api, force=True, combo=combo, round_=round_):
+            ref = original(app_id, version, hub_api, force)
+            i = (list(apps).index(app_id) + round_) % len(combos)
+            img_p, base_p = combos[i] if app_id != "hello" else combo
+            return ImageRef(ref.version, img_p + ref.image[len(PREFIX):], base_p + ref.base[len(PREFIX):],
+                            ref.build)
+
+        catalog.image = image_
+        assert await manager.poll_catalog() == {"upgraded": []}
+        for app_id in apps:
+            await manager._sync(app_id)
+            await manager.reconcile_app(app_id)
+            rec = manager.apps[app_id]
+            want = image_(app_id, apps[app_id], 2)
+            assert (rec["image"], rec["base"]) == (want.image, want.base)
+            assert rec["installed_version"] == apps[app_id] and rec["status"] == INSTALLED
+        assert [c for c in driver.calls if c[0] in ("stop", "start", "pull", "snapshot", "restore", "gc")] == []
+        assert verifier.verified == []

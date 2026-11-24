@@ -67,7 +67,7 @@ class InstallRequest(BaseModel):
 
 
 def create_app(cfg, driver, catalog=None, verifier=None, run_background=True):
-    catalog = catalog or Catalog(cfg.catalog_url, cfg.image_prefix, cfg.allow_http)
+    catalog = catalog or Catalog(cfg.catalog_url, cfg.accepted_prefixes, cfg.allow_http)
     manager = Manager(cfg, driver, catalog, verifier or attest.from_config(cfg))
     expected = f"Bearer {cfg.token}".encode()
 

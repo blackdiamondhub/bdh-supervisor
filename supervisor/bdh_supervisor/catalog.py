@@ -13,10 +13,14 @@ blackdiamondlodge/bdh-app-catalog)::
                                       "base": "ghcr.io/blackdiamondlodge/bdh-app-runtime@sha256:<hex>",
                                       "build": "<builder run>", ...}]}}}
 
-Images come only from ``<image_prefix>bdh-app-<id>`` (``ghcr.io/blackdiamondlodge/``)
-and are always pinned by digest; ``base`` must be a digest of
-``<image_prefix>bdh-app-runtime``. Wheel entries (``kind: wheel``, hub API 1)
-are not runnable here.
+Images come only from ``<prefix>bdh-app-<id>`` for an accepted prefix
+(``BDH_IMAGE_PREFIXES``: ``ghcr.io/blackdiamondlodge/`` and
+``ghcr.io/blackdiamondhub/``) and are always pinned by digest; ``base`` must
+be a digest of ``<prefix>bdh-app-runtime`` (its prefix may differ from the
+image's). Wheel entries (``kind: wheel``, hub API 1) are not runnable here.
+
+GHCR keeps digests when an org is renamed, so the same digest under two
+accepted prefixes is the same image (see :func:`same_image`).
 """
 import json
 import re
@@ -53,16 +57,38 @@ def base_repo(prefix):
     return f"{prefix}bdh-app-runtime"
 
 
-def _pinned(ref, repo, what):
+def _prefixes(prefix):
+    return (prefix,) if isinstance(prefix, str) else tuple(prefix)
+
+
+def _pinned(ref, repos, what):
     if not isinstance(ref, str) or "@" not in ref:
         raise CatalogError(f"{what} must be pinned by digest: {ref!r}")
     name, digest = ref.rsplit("@", 1)
-    if name != repo or not DIGEST_RE.match(digest):
-        raise CatalogError(f"{what} must be {repo}@sha256:<digest>, not {ref!r}")
+    if name not in repos or not DIGEST_RE.match(digest):
+        raise CatalogError(f"{what} must be {' or '.join(repos)}@sha256:<digest>, not {ref!r}")
     return ref
 
 
+def unprefixed(ref, prefixes):
+    """``ref`` without its accepted registry prefix, or None if it has none."""
+    for prefix in _prefixes(prefixes):
+        if isinstance(ref, str) and ref.startswith(prefix):
+            return ref[len(prefix):]
+    return None
+
+
+def same_image(a, b, prefixes):
+    """True if ``a`` and ``b`` are the same name and digest under accepted prefixes."""
+    if a == b:
+        return True
+    rest = unprefixed(a, prefixes)
+    return rest is not None and "@" in rest and rest == unprefixed(b, prefixes)
+
+
 def image_ref(entry, app_id, prefix):
+    """``prefix`` is one accepted registry prefix or a sequence of them."""
+    prefixes = _prefixes(prefix)
     if entry.get("kind") != "image":
         raise CatalogError(f"{app_id} {entry.get('version')} is not an image (kind {entry.get('kind')!r})")
     build = entry.get("build", "")
@@ -70,8 +96,8 @@ def image_ref(entry, app_id, prefix):
         raise CatalogError("catalog entry has a bad build")
     return ImageRef(
         version=entry["version"],
-        image=_pinned(entry.get("image"), app_repo(prefix, app_id), "image"),
-        base=_pinned(entry.get("base"), base_repo(prefix), "base"),
+        image=_pinned(entry.get("image"), [app_repo(p, app_id) for p in prefixes], "image"),
+        base=_pinned(entry.get("base"), [base_repo(p) for p in prefixes], "base"),
         build=build,
     )
 
@@ -97,9 +123,10 @@ def find_version(catalog, app_id, version, hub_api, prefix):
 
 
 class Catalog:
-    def __init__(self, url, prefix="ghcr.io/blackdiamondlodge/", allow_http=False, opener=None):
+    def __init__(self, url, prefix=("ghcr.io/blackdiamondlodge/", "ghcr.io/blackdiamondhub/"), allow_http=False,
+                 opener=None):
         self.url = url
-        self.prefix = prefix
+        self.prefix = _prefixes(prefix)
         self.allow_http = allow_http
         self.opener = opener or urllib.request.urlopen
         self._cached = None

@@ -249,18 +249,33 @@ class DockerDriver(RuntimeDriver):
             raise DriverError(f"{action} of {app_id} data failed ({code}): {output.strip()[-1500:]}")
 
     def gc(self, app_id, keep):
-        name = f"{self.cfg.image_prefix}bdh-app-{app_id}"
+        # The app's repository under every accepted prefix: after an org rename
+        # one image can carry both names (same digest), and is still only the app's.
+        names = [f"{p}bdh-app-{app_id}" for p in self.cfg.accepted_prefixes]
         removed = []
-        for image in self.api.images(name=name, all=False):
+        images = {}
+        for name in names:
+            for image in self.api.images(name=name, all=False):
+                images.setdefault(image["Id"], image)
+        for image in images.values():
             if image["Id"] in keep:
                 continue
             digests = image.get("RepoDigests") or []
-            if not digests or not all(d.startswith(name + "@") for d in digests):
+            if not digests or not all(d.startswith(tuple(n + "@" for n in names)) for d in digests):
                 continue  # shared with another repository (e.g. a base): leave it
             # (The containerd image store lists ``repo@digest`` as a tag too.)
-            if any(t for t in image.get("RepoTags") or [] if not t.startswith((name + ":", name + "@"))):
+            ours = tuple(n + c for n in names for c in (":", "@"))
+            if any(t for t in image.get("RepoTags") or [] if not t.startswith(ours)):
                 continue
             try:
+                # Docker refuses to delete (without force) an image referenced by
+                # several repositories, so drop the extra names first.
+                refs = list(dict.fromkeys(digests + list(image.get("RepoTags") or [])))
+                named = [n for n in names if any(r.startswith((n + "@", n + ":")) for r in refs)]
+                for n in named[:-1]:
+                    for r in refs:
+                        if r.startswith((n + "@", n + ":")):
+                            self.api.remove_image(r, force=False, noprune=True)
                 self.api.remove_image(image["Id"], force=False, noprune=False)
                 removed.append(image["Id"])
             except (APIError, NotFound) as exc:
@@ -379,9 +394,21 @@ class DockerDriver(RuntimeDriver):
         for role, c in live.items():
             spec = wanted.get(role)
             stamp = ((c.get("Config") or {}).get("Labels") or {}).get(T.SPEC_LABEL)
-            if spec is None or stamp != T.spec_hash(spec):
+            if spec is None or stamp not in self._stamps(spec):
                 out.append(role)
         return out
+
+    def _stamps(self, spec):
+        """``spec``'s stamp, and its stamps with the image under the other accepted
+        prefixes: renaming the registry (same digest) is not a reason to recreate."""
+        stamps = {T.spec_hash(spec)}
+        image = spec.get("image") or ""
+        for prefix in self.cfg.accepted_prefixes:
+            if image.startswith(prefix):
+                rest = image[len(prefix):]
+                stamps.update(T.spec_hash(dict(spec, image=p + rest)) for p in self.cfg.accepted_prefixes)
+                break
+        return stamps
 
     def logs(self, app_id, lines):
         try:

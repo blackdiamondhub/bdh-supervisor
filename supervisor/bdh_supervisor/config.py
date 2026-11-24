@@ -8,20 +8,46 @@ def _int(name, default):
     return int(os.environ.get(name, default))
 
 
+def _list(name, default):
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return tuple(v.strip() for v in raw.split(",") if v.strip())
+
+
+def _unique(*values):
+    """``values`` without blanks and repeats, in order."""
+    return tuple(dict.fromkeys(v for v in values if v))
+
+
+# The GitHub org is moving from blackdiamondlodge to blackdiamondhub. GHCR
+# keeps the digests, so during the move both names are the same image, and
+# the catalog's builder signs as either org's workflow.
+OLD_ORG, NEW_ORG = "blackdiamondlodge", "blackdiamondhub"
+CATALOG_WORKFLOW = "https://github.com/{}/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main"
+
+
 @dataclass(frozen=True)
 class Config:
     token: str = ""
     socket_path: str = "/run/bdh-supervisor/supervisor.sock"
     state_dir: str = "/state"
     catalog_url: str = ""
-    # App images must be <image_prefix>bdh-app-<id>@sha256:..., built on
-    # <image_prefix>bdh-app-runtime@sha256:... (see catalog.py).
-    image_prefix: str = "ghcr.io/blackdiamondlodge/"
+    # App images must be <prefix>bdh-app-<id>@sha256:..., built on
+    # <prefix>bdh-app-runtime@sha256:... for one of the accepted prefixes
+    # (image_prefix and image_prefixes; see catalog.py). image_prefix is the
+    # primary one, for anything that names images.
+    image_prefix: str = f"ghcr.io/{OLD_ORG}/"
+    image_prefixes: tuple = (f"ghcr.io/{OLD_ORG}/", f"ghcr.io/{NEW_ORG}/")
     attestation: str = "required"  # or "off" (tests only)
-    attestation_repo: str = "blackdiamondlodge/bdh-app-catalog"
-    attestation_identity: str = (
-        "https://github.com/blackdiamondlodge/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main"
-    )
+    # Attestations are looked up in these repositories in order (a 404 or an
+    # empty list falls through to the next); a bundle signed by any of the
+    # identities is accepted. The singular fields (BDH_ATTESTATION_REPO /
+    # _IDENTITY, the old settings) are added to the lists when set.
+    attestation_repos: tuple = (f"{NEW_ORG}/bdh-app-catalog", f"{OLD_ORG}/bdh-app-catalog")
+    attestation_identities: tuple = (CATALOG_WORKFLOW.format(OLD_ORG), CATALOG_WORKFLOW.format(NEW_ORG))
+    attestation_repo: str = ""
+    attestation_identity: str = ""
     github_token: str = field(default="", repr=False)
     supervisor_image: str = "ghcr.io/blackdiamondlodge/bdh-supervisor:latest"
     go2rtc_image: str = "ghcr.io/blackdiamondlodge/go2rtc-nack:latest"
@@ -68,8 +94,11 @@ class Config:
             catalog_url=os.environ.get("BDH_CATALOG_URL", ""),
             image_prefix=os.environ.get("BDH_IMAGE_PREFIX", cls.image_prefix),
             attestation=os.environ.get("BDH_ATTESTATION", cls.attestation),
+            image_prefixes=_list("BDH_IMAGE_PREFIXES", cls.image_prefixes),
             attestation_repo=os.environ.get("BDH_ATTESTATION_REPO", cls.attestation_repo),
             attestation_identity=os.environ.get("BDH_ATTESTATION_IDENTITY", cls.attestation_identity),
+            attestation_repos=_list("BDH_ATTESTATION_REPOS", cls.attestation_repos),
+            attestation_identities=_list("BDH_ATTESTATION_IDENTITIES", cls.attestation_identities),
             github_token=os.environ.get("BDH_GITHUB_TOKEN", ""),
             supervisor_image=os.environ.get("BDH_SUPERVISOR_IMAGE", cls.supervisor_image),
             go2rtc_image=os.environ.get("BDH_GO2RTC_IMAGE", cls.go2rtc_image),
@@ -104,12 +133,29 @@ class Config:
             raise ValueError("BDH_FIREWALL must be 'required' or 'off'")
         if self.attestation not in ("required", "off"):
             raise ValueError("BDH_ATTESTATION must be 'required' or 'off'")
-        if not self.image_prefix.endswith("/"):
-            raise ValueError("BDH_IMAGE_PREFIX must end with '/'")
+        if not all(p.endswith("/") for p in self.accepted_prefixes):
+            raise ValueError("BDH_IMAGE_PREFIX and BDH_IMAGE_PREFIXES must end with '/'")
+        if self.attestation == "required" and not (self.accepted_identities and self.accepted_repos):
+            raise ValueError("attestation needs at least one repository and signer identity")
         net = ipaddress.ip_network(f"{self.subnet_prefix}.0.0/16")
         if not net.is_private:
             raise ValueError("BDH_SUBNET_PREFIX must be a private /16 prefix, e.g. 10.213")
         return self
+
+    @property
+    def accepted_prefixes(self):
+        """Registry prefixes app and base images may come from; the primary first."""
+        return _unique(self.image_prefix, *self.image_prefixes)
+
+    @property
+    def accepted_repos(self):
+        """Repositories whose attestations are queried, in order."""
+        return _unique(self.attestation_repo, *self.attestation_repos)
+
+    @property
+    def accepted_identities(self):
+        """Signer identities (workflow URIs) an attestation may come from."""
+        return _unique(*self.attestation_identities, self.attestation_identity)
 
     @property
     def apps_cidr(self):
