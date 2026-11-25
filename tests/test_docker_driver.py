@@ -132,8 +132,14 @@ OLD_REPO = "ghcr.io/blackdiamondlodge/bdh-app-cameras"
 NEW_REPO = "ghcr.io/blackdiamondhub/bdh-app-cameras"
 
 
+def _both_orgs(cfg):
+    import dataclasses
+
+    return dataclasses.replace(cfg, image_prefixes=("ghcr.io/blackdiamondhub/", "ghcr.io/blackdiamondlodge/"))
+
+
 def test_gc_collects_images_named_under_either_org(cfg):
-    d = DockerDriver(cfg, client=mock.MagicMock())
+    d = DockerDriver(_both_orgs(cfg), client=mock.MagicMock())
     dual = {"Id": "sha256:dual", "RepoDigests": [f"{OLD_REPO}@sha256:1", f"{NEW_REPO}@sha256:1"],
             "RepoTags": [f"{OLD_REPO}@sha256:1", f"{NEW_REPO}@sha256:1"]}
     new_only = {"Id": "sha256:new", "RepoDigests": [f"{NEW_REPO}@sha256:2"], "RepoTags": []}
@@ -152,7 +158,7 @@ def test_gc_collects_images_named_under_either_org(cfg):
 def test_renamed_image_does_not_make_containers_outdated(cfg):
     import dataclasses
 
-    d, _ = _live(cfg, _plan())
+    d, _ = _live(_both_orgs(cfg), _plan())
     renamed = dataclasses.replace(_plan(), image=IMAGE.replace("blackdiamondlodge", "blackdiamondhub"))
     assert d.state("cameras", renamed).outdated == []
     rebuilt = dataclasses.replace(_plan(), image=IMAGE.replace("c" * 64, "d" * 64))

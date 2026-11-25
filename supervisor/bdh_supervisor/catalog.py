@@ -14,8 +14,8 @@ blackdiamondhub/bdh-app-catalog)::
                                       "build": "<builder run>", ...}]}}}
 
 Images come only from ``<prefix>bdh-app-<id>`` for an accepted prefix
-(``BDH_IMAGE_PREFIXES``: ``ghcr.io/blackdiamondhub/`` and
-``ghcr.io/blackdiamondlodge/``) and are always pinned by digest; ``base`` must
+(``BDH_IMAGE_PREFIXES``, default ``ghcr.io/blackdiamondhub/``) and are always
+pinned by digest; ``base`` must
 be a digest of ``<prefix>bdh-app-runtime`` (its prefix may differ from the
 image's). Wheel entries (``kind: wheel``, hub API 1) are not runnable here.
 
@@ -123,7 +123,7 @@ def find_version(catalog, app_id, version, hub_api, prefix):
 
 
 class Catalog:
-    def __init__(self, url, prefix=("ghcr.io/blackdiamondhub/", "ghcr.io/blackdiamondlodge/"), allow_http=False,
+    def __init__(self, url, prefix=("ghcr.io/blackdiamondhub/",), allow_http=False,
                  opener=None):
         self.url = url
         self.prefix = _prefixes(prefix)
