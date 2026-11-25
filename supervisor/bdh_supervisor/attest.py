@@ -9,9 +9,11 @@ transparency log, signature) with the signer identity pinned to that
 workflow, and checks that the signed in-toto statement is SLSA provenance
 for exactly this digest. An image that no bundle vouches for is refused.
 
-While the org moves from ``blackdiamondlodge`` to ``blackdiamondhub``, both
-orgs' workflow identities are accepted (older bundles stay signed by the old
-one) and both orgs' catalog repositories are queried, the new one first.
+The org moved from ``blackdiamondlodge`` to ``blackdiamondhub``. Bundles are
+fetched from the new catalog repository only (GitHub serves the pre-rename
+ones there too), but both orgs' workflow identities are accepted because older
+bundles stay signed by the old one. Several repositories can still be
+configured; they are queried in order.
 
 ``BDH_ATTESTATION=off`` turns this off; it exists for the integration tests,
 which build images locally. Production hubs must leave it on.

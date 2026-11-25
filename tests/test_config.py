@@ -6,14 +6,15 @@ OLD = "https://github.com/blackdiamondlodge/bdh-app-catalog/.github/workflows/bu
 NEW = "https://github.com/blackdiamondhub/bdh-app-catalog/.github/workflows/build.yml@refs/heads/main"
 
 
-def test_both_orgs_are_accepted_by_default(monkeypatch):
+def test_only_new_org_is_fetched_but_old_signer_is_accepted(monkeypatch):
     for var in ("BDH_IMAGE_PREFIX", "BDH_IMAGE_PREFIXES", "BDH_ATTESTATION_REPO", "BDH_ATTESTATION_REPOS",
                 "BDH_ATTESTATION_IDENTITY", "BDH_ATTESTATION_IDENTITIES"):
         monkeypatch.delenv(var, raising=False)
     cfg = Config.from_env()
     assert cfg.image_prefix == "ghcr.io/blackdiamondhub/"
-    assert cfg.accepted_prefixes == ("ghcr.io/blackdiamondhub/", "ghcr.io/blackdiamondlodge/")
-    assert cfg.accepted_repos == ("blackdiamondhub/bdh-app-catalog", "blackdiamondlodge/bdh-app-catalog")
+    assert cfg.accepted_prefixes == ("ghcr.io/blackdiamondhub/",)
+    assert cfg.accepted_repos == ("blackdiamondhub/bdh-app-catalog",)
+    # Catalog entries built before the rename are signed by the old org's workflow.
     assert cfg.accepted_identities == (NEW, OLD)
 
 

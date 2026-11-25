@@ -153,7 +153,7 @@ def test_from_config(cfg, monkeypatch, tmp_path):
     assert isinstance(attest.from_config(dataclasses.replace(cfg, attestation="off")), attest.NoVerification)
     v = attest.from_config(cfg)
     assert isinstance(v, AttestationVerifier)
-    assert v.repos == ("blackdiamondhub/bdh-app-catalog", "blackdiamondlodge/bdh-app-catalog")
+    assert v.repos == ("blackdiamondhub/bdh-app-catalog",)
     assert v.identities == (NEW_IDENTITY, IDENTITY)
     legacy = attest.from_config(dataclasses.replace(cfg, attestation_repo="me/cat", attestation_identity="https://x"))
     assert legacy.repos[0] == "me/cat" and legacy.identities[-1] == "https://x"
